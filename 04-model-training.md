@@ -27,18 +27,18 @@ This hardware allows training large models at bf16 precision without quantizatio
 
 ## Model Selection
 
-### PoC Comparison Strategy
+### Pilot Comparison Strategy
 
 Compare MoE vs Dense architectures before committing:
 
 | Model | Type | Size | Active Params | VRAM (bf16) | Role |
 |-------|------|------|---------------|-------------|------|
-| **Qwen2-MoE-14B** | MoE | 14B | 2.7B | ~28GB | PoC - MoE candidate |
-| **Llama 3 8B** | Dense | 8B | 8B | ~16GB | PoC - Dense candidate |
+| **Qwen2-MoE-14B** | MoE | 14B | 2.7B | ~28GB | Pilot - MoE candidate |
+| **Llama 3 8B** | Dense | 8B | 8B | ~16GB | Pilot - Dense candidate |
 
 ### Production Scale-Up
 
-After PoC determines winner:
+After pilot determines winner:
 
 | If Winner | Scale To | VRAM |
 |-----------|----------|------|
@@ -202,18 +202,18 @@ When model response shows low confidence:
 
 ---
 
-## PoC Execution Checklist
+## Pilot Execution Checklist
 
 ### Data Preparation
 - [ ] Export ~500 "good" Q&A pairs from existing user Q&A
 - [ ] Run MCP extraction on compute-resources and software-discovery
 - [ ] Generate ~200-500 Q&A pairs from key documentation
 - [ ] Write ~50 refusal/defer-to-live examples
-- [ ] Total: ~1,500-2,000 pairs for PoC
+- [ ] Total: ~1,500-2,000 pairs for pilot
 
 ### Training
 - [ ] Set up environment on GH200 (Python venv, CUDA 12.6, PyTorch)
-- [ ] Train Qwen2-MoE-14B on PoC dataset
+- [ ] Train Qwen2-MoE-14B on pilot dataset
 - [ ] Train Llama 3 8B on same dataset
 - [ ] Track with wandb
 

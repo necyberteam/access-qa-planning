@@ -83,10 +83,10 @@ Replace the current RAG LLM with an intelligent agent system:
                                    │
                                    ▼
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                         05-events-crud                                       │
+│                         05-events-actions                                    │
 │                                                                             │
-│  PoC for authenticated action tools                                         │
-│  Auth patterns, CRUD via conversation                                       │
+│  Pilot for authenticated action tools                                       │
+│  Auth patterns, actions via conversation                                    │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -97,8 +97,8 @@ Replace the current RAG LLM with an intelligent agent system:
 | 01 | [agent-architecture.md](./01-agent-architecture.md) | System design + roadmap | Architecture, phases, success metrics, data governance |
 | 02 | [training-data.md](./02-training-data.md) | Data preparation | MCP extraction, Q&A templates, deduplication |
 | 03 | [review-system.md](./03-review-system.md) | Human review | Pre-training approval, post-deployment feedback, Web UI |
-| 04 | [model-training.md](./04-model-training.md) | Model & infrastructure | GH200 setup, model selection, PoC comparison |
-| 05 | [events-crud.md](./05-events-crud.md) | PoC for action tools | Auth patterns, CRUD via conversation |
+| 04 | [model-training.md](./04-model-training.md) | Model & infrastructure | GH200 setup, model selection, pilot comparison |
+| 05 | [events-actions.md](./05-events-actions.md) | Pilot for action tools | Auth patterns, actions via conversation |
 
 ## Reading Paths
 
@@ -112,16 +112,16 @@ The data pipeline docs describe a continuous flow:
 3. [04-model-training.md](./04-model-training.md) - Training the fine-tuned model
 
 ### Future: Action Tools
-[05-events-crud.md](./05-events-crud.md) - PoC for authenticated operations via MCP tools
+[05-events-actions.md](./05-events-actions.md) - Pilot for AI agents to take actions on behalf of users
 
 ## Current Status
 
-- **Phase**: Planning / PoC Preparation
+- **Phase**: Planning / Pilot Preparation
 - **Next Steps**:
   1. Export existing "good" Q&A pairs from production
   2. Run MCP extraction for compute-resources + software-discovery
   3. Set up training infrastructure on GH200
-  4. Begin model PoC comparing architectures
+  4. Begin model pilot comparing architectures
 
 ## Related Repositories
 

@@ -1,12 +1,16 @@
-# Events CRUD (Proof of Concept)
+# Events Actions (Pilot)
 
 > **Related**: [Agent Architecture](./01-agent-architecture.md)
 
 ## Overview
 
-**This is a proof-of-concept** for authenticated MCP tools that take actions, not just consume data. Events management is the first use case, but the patterns established here apply to any future CRUD tools.
+**Goal**: Enable AI agents to take actions on behalf of users - not just answer questions, but actually do things.
 
-### Why Events as PoC
+Currently, the QA Bot can only read data. This pilot extends it to perform authenticated operations, allowing users to say "Create a workshop for next Tuesday" and have the agent actually create the event.
+
+Events management is the first use case, but the patterns established here apply to any future action tools.
+
+### Why Events as the Pilot
 
 | Factor | Events | Other Candidates |
 |--------|--------|------------------|
@@ -15,7 +19,7 @@
 | API availability | Drupal Events API exists | Would need new APIs |
 | Complexity | Moderate - good test case | - |
 
-### Future Action Tools (after PoC)
+### Future Action Tools
 
 Once patterns are proven:
 - Affinity group membership management
@@ -33,7 +37,7 @@ Once patterns are proven:
 - QA Bot receives user context but can't take actions
 
 **Target**:
-- Authenticated CRUD operations via MCP tools
+- Authenticated create/update/delete operations via MCP tools
 - Users create events conversationally through QA Bot
 - Events follow content moderation (draft → published)
 - Full audit trail
@@ -253,7 +257,7 @@ All API operations logged:
 
 ## Reusable Patterns for Future Tools
 
-This PoC establishes patterns for any authenticated action tool:
+This pilot establishes patterns for any authenticated action tool:
 
 1. **JWT delegation**: Web app creates scoped JWT with user claims
 2. **Audience separation**: Each tool domain has own audience

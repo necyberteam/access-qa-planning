@@ -1,6 +1,6 @@
 # ACCESS Documentation Agent
 
-> **Related**: [Training Data](./02-training-data.md) | [Review System](./03-review-system.md) | [Model Training](./04-model-training.md) | [Events CRUD](./05-events-crud.md)
+> **Related**: [Training Data](./02-training-data.md) | [Review System](./03-review-system.md) | [Model Training](./04-model-training.md) | [Events Actions](./05-events-actions.md)
 
 ## Overview
 
@@ -207,7 +207,7 @@ Handle dynamic data that must be current:
 | xdmod-metrics | Usage statistics | Always current |
 | allocations (user-specific) | Balances, project status | Per-user, real-time |
 
-→ *Details: [Events CRUD](./05-events-crud.md)* for authenticated action patterns
+→ *Details: [Events Actions](./05-events-actions.md)* for authenticated action patterns
 
 ### n8n Orchestrator
 
@@ -329,7 +329,7 @@ Coordinates the workflow:
 **Goal**: Train and evaluate fine-tuned model.
 
 - [ ] Set up GH200 training environment
-- [ ] Run PoC comparing model architectures
+- [ ] Run pilot comparing model architectures
 - [ ] Train production model on approved data
 
 → *Details: [Model Training](./04-model-training.md)*
@@ -354,16 +354,16 @@ Coordinates the workflow:
 
 ---
 
-## Proof of Concept
+## Pilot
 
 Before full implementation, validate with minimal data.
 
-### PoC Goals
+### Pilot Goals
 1. Test whether fine-tuning works for ACCESS domain
 2. Compare MoE vs Dense architectures
 3. Validate before building full infrastructure
 
-### PoC Data
+### Pilot Data
 
 | Source | Count |
 |--------|-------|
@@ -373,14 +373,14 @@ Before full implementation, validate with minimal data.
 | Negative/refusal examples | ~50 |
 | **Total** | **~1,500-2,000** |
 
-### PoC Success Criteria
+### Pilot Success Criteria
 
 - [ ] Model learns ACCESS-CI domain knowledge
 - [ ] Citations appear in >80% of responses
 - [ ] Refusal behavior triggers for dynamic queries
 - [ ] Inference latency <2s on GH200
 
-### PoC Baseline Comparison
+### Pilot Baseline Comparison
 
 To validate the approach, compare fine-tuned model against:
 
@@ -400,7 +400,7 @@ Run golden eval set against all three. Fine-tuned model should beat each baselin
 
 | Risk | Mitigation |
 |------|------------|
-| Model quality insufficient | PoC compares architectures; iterate on data |
+| Model quality insufficient | Pilot compares architectures; iterate on data |
 | GH200 memory tight | Start with smaller model, batch_size=1 |
 | Citation accuracy problems | Tokenization checks; post-processor validation |
 | Query classifier mistakes | Default to COMBINED (safe); confidence fallback |
@@ -450,4 +450,4 @@ User (logged in) ──▶ QA Bot ──▶ n8n ──▶ Events MCP ──▶ D
                         └── JWT token passed for user identity
 ```
 
-→ *Details: [Events CRUD](./05-events-crud.md)* - Proof of concept for action tools
+→ *Details: [Events Actions](./05-events-actions.md)* - Pilot for AI agents to take actions on behalf of users
