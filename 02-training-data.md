@@ -14,11 +14,8 @@ Training data comes from three sources, combined into a unified dataset:
 │  ┌─────────────────┐   ┌─────────────────┐   ┌─────────────────┐           │
 │  │  MCP EXTRACTED  │   │   USER Q&A DB   │   │  RAG DOCS Q&A   │           │
 │  │                 │   │                 │   │                 │           │
-│  │  ~1,300 pairs   │   │  ~500-1000      │   │  ~500-1000      │           │
-│  │                 │   │  pairs          │   │  pairs          │           │
-│  │  Structured     │   │                 │   │                 │           │
-│  │  from API data  │   │  Real user      │   │  LLM-generated  │           │
-│  │                 │   │  questions      │   │  from PDFs      │           │
+│  │  Structured     │   │  Real user      │   │  LLM-generated  │           │
+│  │  from API data  │   │  questions      │   │  from PDFs      │           │
 │  └────────┬────────┘   └────────┬────────┘   └────────┬────────┘           │
 │           │                     │                     │                     │
 │           └──────────────┬──────┴─────────────────────┘                     │
@@ -30,11 +27,21 @@ Training data comes from three sources, combined into a unified dataset:
 │                          ▼                                                  │
 │               ┌─────────────────────┐                                       │
 │               │   UNIFIED DATASET   │                                       │
-│               │   ~2,500-3,500      │                                       │
 │               └─────────────────────┘                                       │
 │                                                                             │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
+
+### Why Q&A Pairs, Not Raw Documents
+
+Research and industry practice show that fine-tuning on Q&A pairs is more effective than training on raw documentation:
+
+| Approach | Pros | Cons |
+|----------|------|------|
+| **Q&A Pairs** | Teaches question-answering format directly; clearer training signal; reduces hallucination | Requires generation/curation effort |
+| **Raw Docs** | Easy to collect | Model learns document structure, not Q&A format; higher hallucination rate |
+
+Q&A pairs also capture what users *actually ask*, not just what documentation covers. Real user questions from production are especially valuable.
 
 ---
 
@@ -63,7 +70,7 @@ Training data comes from three sources, combined into a unified dataset:
 
 ### Q&A Templates by Domain
 
-#### Compute Resources (~340 pairs)
+#### Compute Resources
 
 **Simple Factual**:
 - "What GPUs does {resource_name} have?"
@@ -84,7 +91,7 @@ Training data comes from three sources, combined into a unified dataset:
 - "What resource should I use for machine learning?"
 - "Which system is best for large memory jobs?"
 
-#### Software Discovery (~285 pairs)
+#### Software Discovery
 
 **Availability**:
 - "Is {software} available on ACCESS?"
@@ -100,13 +107,13 @@ Training data comes from three sources, combined into a unified dataset:
 - "What bioinformatics software is available?"
 - "What visualization tools are available?"
 
-#### Allocations (~66 pairs)
+#### Allocations
 
 - "What fields of science use ACCESS most?"
 - "What {field} projects are on ACCESS?"
 - "Find projects about {topic}"
 
-#### Negative Examples - Defer to Live (~400 pairs)
+#### Negative Examples - Defer to Live
 
 These train the model to recognize when NOT to answer from memory:
 
@@ -117,22 +124,17 @@ These train the model to recognize when NOT to answer from memory:
 
 ### Expected Output from MCP Extraction
 
-| Domain | Q&A Pairs |
-|--------|-----------|
-| compute-resources | ~340 |
-| software-discovery | ~285 |
-| allocations | ~66 |
-| affinity-groups | ~60 |
-| nsf-awards | ~125 |
-| defer-to-live (negative) | ~400 |
-| **Total** | **~1,276** |
+Counts TBD after running extraction pipeline. Will depend on:
+- Number of resources, software packages, allocations in each MCP server
+- Number of Q&A templates per entity type
+- Coverage of negative/deferral examples needed
 
 ---
 
 ## Source 2: Existing User Q&A Database
 
 ### What We Have
-- Several thousand Q&A pairs from production RAG system
+- Q&A pairs from production RAG system (count TBD)
 - Staff-labeled "good" / "bad" quality ratings
 - Real user questions (authentic distribution)
 
@@ -151,7 +153,9 @@ A Q&A pair is "good" if:
 - ✅ Question is clear and specific
 - ✅ Not a duplicate of another pair
 
-### Expected Output: ~500-1000 pairs
+### Expected Output
+
+Count TBD - depends on how many existing pairs pass quality filter.
 
 ---
 
@@ -182,7 +186,9 @@ Given a documentation section, generate questions a real user might ask, with an
 | FAQs | Existing FAQ pages | MEDIUM (may duplicate) |
 | Technical | Job submission, data transfer | HIGH |
 
-### Expected Output: ~500-1000 pairs
+### Expected Output
+
+Count TBD - depends on documentation corpus size and Q&A density per section.
 
 ---
 
@@ -277,13 +283,13 @@ For each extraction:
 
 ### Retraining Triggers
 
-| Trigger | Threshold |
-|---------|-----------|
-| New Q&A pairs accumulated | >500 |
-| Modified Q&A pairs | >200 |
-| New user Q&A added | >100 |
-| Scheduled | Quarterly |
-| Manual | On major release |
+| Trigger | Threshold | Rationale |
+|---------|-----------|-----------|
+| New Q&A pairs accumulated | >10% of training set | Significant new knowledge |
+| Modified Q&A pairs | >5% of training set | Enough drift to matter |
+| Negative user feedback | >2% of responses | Quality degradation signal |
+| Scheduled | Quarterly | Catch gradual drift |
+| Manual | On major release | New resources, policy changes |
 
 → *Details on human review: [04-review-system.md](./04-review-system.md)*
 
@@ -291,40 +297,52 @@ For each extraction:
 
 ## Domain Tagging
 
-Tags help analyze coverage and balance the dataset.
+Each Q&A pair is tagged with a domain category. This enables:
+
+1. **Coverage analysis** - Identify gaps (e.g., few questions about data transfer)
+2. **Dataset balancing** - Ensure the model doesn't over-learn one domain
+3. **Targeted improvements** - When users report issues in a domain, add more examples there
+4. **Evaluation slicing** - Measure accuracy per domain, not just overall
+
+### How Tags Are Applied
+
+- **MCP extraction**: Automatic based on source server (compute-resources → `compute`)
+- **User Q&A**: Manual tagging during review, or classifier-assisted
+- **Documentation**: Based on document section/category
 
 ### Taxonomy
 
 ```yaml
 domains:
   compute:
-    - resource_specs
-    - hardware_comparison
-    - resource_selection
+    - resource_specs      # "What GPUs does Delta have?"
+    - hardware_comparison # "Compare Delta and Expanse"
+    - resource_selection  # "What system for ML training?"
   software:
-    - availability
-    - versions
-    - category_search
+    - availability        # "Is TensorFlow on Delta?"
+    - versions           # "What version of Python?"
+    - category_search    # "What visualization tools?"
   allocations:
-    - project_discovery
-    - statistics
+    - project_discovery  # "Find quantum computing projects"
+    - statistics         # "What fields use ACCESS most?"
   process:
-    - getting_started
-    - job_submission
-    - data_transfer
+    - getting_started    # "How do I get an account?"
+    - job_submission     # "How do I submit a job?"
+    - data_transfer      # "How do I transfer files?"
   status:
-    - defer_to_live
+    - defer_to_live      # Questions that should trigger MCP calls
 ```
 
 ---
 
 ## Summary
 
-| Source | Expected Q&A | Priority |
-|--------|--------------|----------|
-| MCP extraction | ~1,300 | High - structured, reliable |
-| User Q&A database | ~500-1000 | Highest - real questions |
-| Documentation | ~500-1000 | Medium - covers gaps |
-| **Total (after dedup)** | **~2,500-3,500** | |
+| Source | Priority | Notes |
+|--------|----------|-------|
+| MCP extraction | High | Structured, reliable - count depends on entities in MCP servers |
+| User Q&A database | Highest | Real questions - count depends on quality filter pass rate |
+| Documentation | Medium | Covers gaps - count depends on corpus size |
+
+Final dataset size TBD after extraction and deduplication.
 
 → *Next in pipeline: [Review System](./03-review-system.md)* - Human review before training

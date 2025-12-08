@@ -4,7 +4,9 @@
 
 ## Overview
 
-The ACCESS documentation agent combines a fine-tuned model with live MCP (Model Context Protocol) data access. This architecture reduces latency for common queries while maintaining real-time accuracy for dynamic data.
+This is an AI-powered question-answering system for [ACCESS](https://access-ci.org) users. ACCESS (Advanced Cyberinfrastructure Coordination Ecosystem: Services & Support) allocates computing resources—supercomputers, cloud platforms, and storage systems—from Resource Providers to researchers across the US.
+
+The agent combines a fine-tuned model with live MCP (Model Context Protocol) data access. This architecture reduces latency for common queries while maintaining real-time accuracy for dynamic data.
 
 ### Current State
 - **In Production**: RAG LLM trained on PDFs and documentation (provides citations/links)
@@ -365,13 +367,14 @@ Before full implementation, validate with minimal data.
 
 ### Pilot Data
 
-| Source | Count |
+| Source | Notes |
 |--------|-------|
-| Existing user Q&A ("good" labeled) | ~500 |
-| MCP extraction (compute-resources + software-discovery) | ~500-1000 |
-| Documentation Q&A | ~200-500 |
-| Negative/refusal examples | ~50 |
-| **Total** | **~1,500-2,000** |
+| Existing user Q&A ("good" labeled) | Real questions from production - highest value |
+| MCP extraction (compute-resources + software-discovery) | Structured data from APIs |
+| Documentation Q&A | LLM-generated from key docs |
+| Negative/refusal examples | Teach model when to defer to live MCP |
+
+Target: enough data to validate fine-tuning approach (exact counts TBD after extraction).
 
 ### Pilot Success Criteria
 

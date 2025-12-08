@@ -2,7 +2,18 @@
 
 > **Version**: 0.1.0 (Planning)
 
-Planning documentation for the ACCESS-CI intelligent documentation agent - combining a fine-tuned model with live MCP (Model Context Protocol) data access.
+Planning documentation for the ACCESS-CI intelligent documentation agent.
+
+## What We're Building
+
+An AI-powered question-answering system for [ACCESS](https://access-ci.org) (Advanced Cyberinfrastructure Coordination Ecosystem: Services & Support). ACCESS allocates computing resources from Resource Providers—supercomputers, cloud platforms, and storage systems—to researchers across the US.
+
+Users ask questions like:
+- "What GPUs does Delta have?"
+- "How do I request an allocation?"
+- "Is Expanse currently down?"
+
+This tool answers those questions accurately, with citations to source data.
 
 ## Executive Summary
 

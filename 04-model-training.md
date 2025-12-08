@@ -29,7 +29,7 @@ This hardware allows training large models at bf16 precision without quantizatio
 
 ### Pilot Comparison Strategy
 
-Compare MoE vs Dense architectures before committing:
+Compare MoE (Mixture of Experts) vs Dense architectures before committing:
 
 | Model | Type | Size | Active Params | VRAM (bf16) | Role |
 |-------|------|------|---------------|-------------|------|
@@ -205,11 +205,11 @@ When model response shows low confidence:
 ## Pilot Execution Checklist
 
 ### Data Preparation
-- [ ] Export ~500 "good" Q&A pairs from existing user Q&A
+- [ ] Export "good" Q&A pairs from existing user Q&A database
 - [ ] Run MCP extraction on compute-resources and software-discovery
-- [ ] Generate ~200-500 Q&A pairs from key documentation
-- [ ] Write ~50 refusal/defer-to-live examples
-- [ ] Total: ~1,500-2,000 pairs for pilot
+- [ ] Generate Q&A pairs from key documentation sections
+- [ ] Write refusal/defer-to-live examples for dynamic queries
+- [ ] Document final counts after extraction
 
 ### Training
 - [ ] Set up environment on GH200 (Python venv, CUDA 12.6, PyTorch)
