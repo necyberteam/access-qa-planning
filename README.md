@@ -17,7 +17,12 @@ This tool answers those questions accurately, with citations to source data.
 
 ## Executive Summary
 
-**Problem**: The current RAG-based QA system has high latency for simple questions and makes repeated API calls for data that rarely changes.
+**Current State**: A RAG-based QA system trained on PDFs and documentation. It answers questions but can become stale and lacks access to live system data.
+
+**Problem**:
+- Static knowledge goes stale between retraining
+- No access to real-time data (outages, current events, user allocations)
+- MCP servers exist but aren't integrated into the QA system
 
 **Solution**: An intelligent agent that routes queries to the optimal handler:
 - Static questions (hardware specs, documentation) → fine-tuned model with baked-in knowledge
@@ -25,8 +30,8 @@ This tool answers those questions accurately, with citations to source data.
 - Combined questions → both working together
 
 **Key Benefits**:
-- 40-60% fewer MCP calls for static queries
-- Sub-2-second latency for common questions
+- Fresh answers for dynamic data via MCP integration
+- Faster responses for static questions via fine-tuned model
 - Maintained citation capability
 - Human review ensures quality before and after training
 
@@ -70,36 +75,6 @@ Replace the current RAG LLM with an intelligent agent system:
 - **Live MCP Calls**: Handles dynamic queries (outages, events, metrics, user-specific data)
 - **Citations Preserved**: Maintain source links users rely on
 - **Action Tools**: Future authenticated operations (create events, etc.)
-
-## Document Map
-
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                        01-agent-architecture.md                              │
-│                                                                             │
-│  System design + implementation roadmap                                     │
-│  Query routing, components, phases, success metrics                         │
-└──────────────────────────────────┬──────────────────────────────────────────┘
-                                   │
-                                   ▼
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                          DATA PIPELINE                                       │
-│  ┌─────────────────────────────────────────────────────────────────────┐    │
-│  │ 02-training-data → 03-review-system → 04-model-training             │    │
-│  │                                                                      │    │
-│  │ Sources &         Human review        Train the                     │    │
-│  │ extraction        (before & after)    fine-tuned model              │    │
-│  └─────────────────────────────────────────────────────────────────────┘    │
-└──────────────────────────────────┬──────────────────────────────────────────┘
-                                   │
-                                   ▼
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                         05-events-actions                                    │
-│                                                                             │
-│  Pilot for authenticated action tools                                       │
-│  Auth patterns, actions via conversation                                    │
-└─────────────────────────────────────────────────────────────────────────────┘
-```
 
 ## Documents
 

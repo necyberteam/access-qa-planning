@@ -27,9 +27,9 @@ An intelligent agent system where:
 ### The Problem
 
 Current RAG-based system:
-- Every query requires retrieval + LLM processing
-- High latency for simple factual questions
-- Repeated MCP calls for static data that rarely changes
+- Trained on PDFs and documentation - knowledge goes stale between updates
+- No access to real-time data (outages, events, user allocations)
+- MCP servers exist with live ACCESS data, but aren't integrated
 
 ### The Solution
 
