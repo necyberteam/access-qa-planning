@@ -231,6 +231,110 @@ Coordinates the workflow:
 
 ---
 
+## Conversation History
+
+Users often ask follow-up questions that depend on previous context:
+
+```
+User: "What GPUs does Delta have?"
+Agent: "Delta has NVIDIA A100 GPUs..."
+
+User: "How does that compare to Expanse?"  ← Requires knowing "that" = GPUs
+Agent: "Compared to Delta's A100s, Expanse has..."
+```
+
+### Session Management
+
+Each conversation session maintains:
+
+| Field | Purpose |
+|-------|---------|
+| `session_id` | Unique identifier for the conversation |
+| `conversation_history` | Recent messages (question + answer pairs) |
+| `question_id` | Unique ID per question for feedback tracking |
+
+### Implementation
+
+- QA Bot generates `session_id` on conversation start
+- Each request includes recent history (last N turns, or token-limited)
+- `question_id` links feedback to specific responses
+- Session expires after inactivity timeout
+
+### Context Window Management
+
+The fine-tuned model has limited context. Strategy:
+
+1. Always include current question
+2. Include recent history (configurable, e.g., last 3 turns)
+3. Summarize older context if needed
+4. Prioritize history relevant to current query
+
+---
+
+## Response Synthesis
+
+When queries involve both model and MCP data, outputs must be combined coherently.
+
+### Synthesis Strategies
+
+| Query Type | Strategy |
+|------------|----------|
+| **Static only** | Return model response directly |
+| **Dynamic only** | Return MCP response directly |
+| **Combined** | Merge model + MCP into unified response |
+
+### Combined Response Pattern
+
+```
+User: "What GPU resources are available and currently working?"
+
+1. Model provides: GPU specs for each resource (static)
+2. MCP provides: Current system status (dynamic)
+3. Synthesizer combines: "Delta has A100 GPUs (currently operational).
+   Expanse has V100 GPUs (maintenance until 5pm)..."
+```
+
+### Synthesis Guidelines
+
+- Lead with the primary information source
+- Integrate secondary source naturally
+- Maintain single, coherent voice
+- Preserve citations from both sources
+- Flag any contradictions for review
+
+---
+
+## Scope & Rejection Handling
+
+Not all queries are ACCESS-related. Handle out-of-scope queries gracefully.
+
+### Helpful Rejection Pattern
+
+Instead of a blunt "I can't help with that", provide guidance:
+
+```
+User: "What's the weather in Chicago?"
+
+Agent: "I'm focused on ACCESS computing resources and can't help with
+weather. But I can help you with:
+- Finding compute resources for your research
+- Checking system status and outages
+- Understanding allocation policies
+
+What ACCESS topic can I help you with?"
+```
+
+### Scope Categories
+
+| Category | Action |
+|----------|--------|
+| ACCESS-related | Answer normally |
+| Adjacent (HPC, research computing) | Answer if possible, clarify scope |
+| Off-topic | Helpful rejection with examples |
+| Harmful/inappropriate | Decline without examples |
+
+---
+
 ## Data Flow
 
 ```
@@ -283,6 +387,69 @@ Coordinates the workflow:
 | **Static query latency** | P95 < 2s end-to-end | Response time tracking |
 | **Query routing accuracy** | ≥95% static/dynamic classification | Classification metrics |
 | **User satisfaction** | ≥80% positive feedback | Thumbs up/down in UI |
+
+---
+
+## Observability & Logging
+
+Every request through n8n should log structured data for monitoring and analysis.
+
+### Request Logging
+
+| Field | Purpose |
+|-------|---------|
+| `question_id` | Unique identifier for this Q&A |
+| `session_id` | Conversation session |
+| `query_text` | The user's question |
+| `classification` | STATIC / DYNAMIC / COMBINED |
+| `route_reason` | Why this classification was chosen |
+| `model_used` | Which model handled the query |
+| `mcp_tools_called` | List of MCP tools invoked (if any) |
+| `citations_returned` | Count of citations in response |
+| `latency_ms` | End-to-end response time |
+| `confidence_score` | Model confidence (if available) |
+| `timestamp` | When the request was processed |
+
+### Uses
+
+- **Debugging**: Trace issues to specific requests
+- **Performance monitoring**: Track latency, identify bottlenecks
+- **Classifier training**: Gather labeled data for learned classifier
+- **Quality analysis**: Correlate routing decisions with user feedback
+
+---
+
+## Drift Detection
+
+The fine-tuned model's knowledge becomes stale over time. Detect when this happens.
+
+### Detection Method
+
+Periodically sample production queries and compare:
+
+```
+1. Select sample of STATIC queries (e.g., 1% of traffic)
+2. Get model's answer
+3. Get fresh answer from live MCP
+4. Compare for significant differences
+5. Log drift events when they diverge
+```
+
+### Drift Indicators
+
+| Signal | Action |
+|--------|--------|
+| Model answer differs from MCP | Log for review |
+| Missing/changed resource specs | Flag for retraining |
+| Outdated software versions | Add freshness disclaimer |
+| New resources not in model | Queue immediate update |
+
+### Thresholds
+
+- **Alert threshold**: >5% of sampled queries show drift
+- **Retrain threshold**: >10% drift OR critical information affected
+
+→ *See also: [Training Data - Retraining Triggers](./02-training-data.md#retraining-triggers)*
 
 ---
 

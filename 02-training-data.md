@@ -53,20 +53,20 @@ Q&A pairs also capture what users *actually ask*, not just what documentation co
 
 | Server | Tools | Update Frequency | Priority |
 |--------|-------|------------------|----------|
-| compute-resources | 4 | Monthly | **HIGH** |
-| software-discovery | 5 | Weekly | **HIGH** |
-| allocations | 9 | Weekly | MEDIUM |
-| nsf-awards | 6+ | Weekly | MEDIUM |
-| affinity-groups | 3+ | Monthly | LOW |
+| compute-resources | 2 | Monthly | **HIGH** |
+| software-discovery | 3 | Weekly | **HIGH** |
+| allocations | 1 | Weekly | MEDIUM |
+| nsf-awards | 1 | Weekly | MEDIUM |
+| affinity-groups | 1 | Monthly | LOW |
 
 **Dynamic Data (KEEP AS LIVE MCP)** - Do NOT train these:
 
-| Server | Why Keep Live |
-|--------|---------------|
-| system-status | Real-time outages |
-| events | Schedules change frequently |
-| announcements | Time-sensitive |
-| xdmod-charts | Always need current metrics |
+| Server | Tools | Why Keep Live |
+|--------|-------|---------------|
+| system-status | 1 | Real-time outages |
+| events | 1 | Schedules change frequently |
+| announcements | 1 | Time-sensitive |
+| xdmod-charts | 3 | Always need current metrics |
 
 ### Q&A Templates by Domain
 
@@ -153,19 +153,17 @@ A Q&A pair is "good" if:
 - ✅ Question is clear and specific
 - ✅ Not a duplicate of another pair
 
-### Expected Output
-
-Count TBD - depends on how many existing pairs pass quality filter.
-
 ---
 
 ## Source 3: Documentation Q&A
 
-### Generation Pipeline
+Generate Q&A pairs from existing ACCESS documentation (PDFs, web pages, guides).
 
-```
-PDF/Doc Section  →  LLM generates 3-5 Q&A  →  Human reviews 10-20%  →  Training data
-```
+### Generation Process
+
+1. **Chunk documents** into logical sections
+2. **LLM generates Q&A** for each section - questions a user might ask, with answers citing the source
+3. **Human reviews** generated pairs before adding to training data
 
 ### LLM Prompt for Q&A Generation
 
@@ -179,16 +177,12 @@ Given a documentation section, generate questions a real user might ask, with an
 
 ### Document Categories
 
-| Category | Example Docs | Q&A Potential |
-|----------|--------------|---------------|
-| Getting Started | Account setup, first allocation | HIGH |
-| User Guides | Resource-specific guides | HIGH |
-| FAQs | Existing FAQ pages | MEDIUM (may duplicate) |
-| Technical | Job submission, data transfer | HIGH |
-
-### Expected Output
-
-Count TBD - depends on documentation corpus size and Q&A density per section.
+| Category | Example Docs |
+|----------|--------------|
+| Getting Started | Account setup, first allocation |
+| User Guides | Resource-specific guides |
+| FAQs | Existing FAQ pages (check for duplicates) |
+| Technical | Job submission, data transfer |
 
 ---
 

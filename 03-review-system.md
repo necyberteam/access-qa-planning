@@ -91,8 +91,18 @@ For MCP-extracted Q&A:
 
 Captures feedback from production:
 
+**Feedback Tracking**:
+
+Each response gets a unique `question_id` that links:
+- The original query and conversation context
+- The response generated
+- User feedback (if provided)
+- Session information for multi-turn analysis
+
+This enables tracing feedback back to specific model outputs for targeted improvement.
+
 **Explicit User Feedback**:
-- Thumbs up/down from QA Bot interface
+- Thumbs up/down from QA Bot interface (linked to `question_id`)
 - Negative feedback automatically queued for review
 - Positive feedback used to reinforce good patterns
 
