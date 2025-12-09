@@ -1,6 +1,6 @@
 # MCP Authentication Architecture
 
-> **Related**: [Agent Architecture](./01-agent-architecture.md) | [Events Actions](./05-events-actions.md) | [Announcements API Spec](./drupal-announcements-api-spec.md)
+> **Related**: [Agent Architecture](./01-agent-architecture.md) | [MCP Action Tools](./05-events-actions.md) | [Announcements API Spec](./drupal-announcements-api-spec.md)
 
 ## Overview
 
@@ -22,7 +22,7 @@ This document describes how authenticated users can perform actions (create anno
 │                                                                                 │
 │   ┌──────────┐    ┌──────────┐    ┌──────────┐    ┌──────────┐    ┌──────────┐ │
 │   │  User    │    │  Drupal  │    │  QA Bot  │    │   MCP    │    │  Drupal  │ │
-│   │ Browser  │    │  (Auth)  │    │          │    │  Server  │    │  (API)   │ │
+│   │ Browser  │    │  (Auth)  │    │          │    │  Server  │    │ JSON:API │ │
 │   └────┬─────┘    └────┬─────┘    └────┬─────┘    └────┬─────┘    └────┬─────┘ │
 │        │               │               │               │               │        │
 │   1. Login via CILogon │               │               │               │        │
@@ -42,10 +42,10 @@ This document describes how authenticated users can perform actions (create anno
 │        │               │               │               │               │        │
 │   6. MCP validates JWT, extracts user  │               │               │        │
 │        │               │               │               │               │        │
-│   7. MCP calls Drupal API with service key + user ID   │               │        │
+│   7. MCP calls JSON:API as service account + X-Acting-User header      │        │
 │        │               │               │               │──────────────▶│        │
 │        │               │               │               │               │        │
-│   8. Drupal creates content as user    │               │               │        │
+│   8. Drupal hook changes author to acting user, creates content        │        │
 │        │               │               │               │◀──────────────│        │
 │        │               │               │               │               │        │
 │   9. Success response  │               │               │               │        │
@@ -56,25 +56,39 @@ This document describes how authenticated users can perform actions (create anno
 
 ---
 
+## Approach: Service Account + JSON:API
+
+Instead of custom API endpoints, we use:
+1. **Drupal JSON:API** for CRUD operations (standard Drupal)
+2. **Key Auth module** for service account authentication
+3. **Small custom module** (`access_mcp_author`) to swap author to acting user
+
+This minimizes custom code while leveraging Drupal's built-in capabilities.
+
+→ *See [Announcements API Spec](./drupal-announcements-api-spec.md) for implementation details*
+
+---
+
 ## Key Principles
 
-### 1. No Token Passthrough
+### 1. Service Account Pattern
+
+The MCP server authenticates to Drupal as a service account (`mcp_service`), not as the end user:
+
+| Component | Value |
+|-----------|-------|
+| Service account | `mcp_service` (Drupal user) |
+| Authentication | Key Auth module (`api-key` header) |
+| Acting user | Passed via `X-Acting-User` header |
+| Author swap | `hook_node_presave()` in `access_mcp_author` module |
+
+### 2. No Token Passthrough to Drupal
 
 Per MCP specification, user tokens should NOT be forwarded to upstream APIs. Instead:
 
 - MCP server validates the user's JWT
-- MCP server uses its **own service credentials** to call Drupal
-- User identity is passed as a **claim** (not a credential)
-
-### 2. Trusted Intermediary Pattern
-
-The MCP server acts as a trusted intermediary:
-
-| What MCP Server Does | Why |
-|---------------------|-----|
-| Validates user JWT | Confirms user identity |
-| Uses own API key | Drupal trusts the MCP server |
-| Passes user ID as header | Drupal knows who to attribute action to |
+- MCP server authenticates to Drupal with its **own service account**
+- User identity is passed as a **header** (not a credential)
 
 ### 3. Separation of Concerns
 
@@ -82,8 +96,9 @@ The MCP server acts as a trusted intermediary:
 |--------|----------------|
 | **Drupal (Auth)** | User login, session, JWT generation |
 | **QA Bot** | Passes JWT with requests |
-| **MCP Server** | Validates JWT, makes authorized API calls |
-| **Drupal (API)** | Validates service key, performs action as user |
+| **MCP Server** | Validates JWT, authenticates as service account, passes acting user |
+| **Drupal (JSON:API)** | CRUD operations |
+| **access_mcp_author** | Validates acting user, swaps author, enforces permissions |
 
 ---
 
@@ -134,42 +149,75 @@ The MCP server acts as a trusted intermediary:
 2. Check `exp` claim (not expired)
 3. Check `aud` claim (correct audience)
 4. Check `iss` claim (correct issuer)
-5. Extract user claims for authorization
+5. Extract `access_id` claim for the acting user
 
-**On success**: Proceed with API call using extracted user identity
+**On success**: Call Drupal JSON:API with service account credentials + `X-Acting-User` header
 
 **On failure**: Return authentication error to QA Bot
 
-### Component 4: Drupal API Authentication
+### Component 4: Drupal Service Account + Key Auth
 
-**Location**: API modules (e.g., `access_announcements_api`)
+**Module**: [Key Auth](https://www.drupal.org/project/key_auth) (contrib)
 
-**Headers required**:
+**Setup**:
+1. Create `mcp_service` user account with appropriate role
+2. Configure Key Auth module for header-based authentication
+3. Generate API key for the service account
+
+**Request headers**:
 
 | Header | Value | Purpose |
 |--------|-------|---------|
-| `X-API-Key` | Service key | Identifies trusted caller (MCP server) |
-| `X-Acting-User` | ACCESS ID | Identifies user performing action |
+| `api-key` | Service account key | Authenticates as `mcp_service` user |
+| `X-Acting-User` | ACCESS ID | Identifies user to attribute action to |
 
-**Validation steps**:
-1. Validate `X-API-Key` against stored service key
-2. Look up Drupal user by `field_access_id` matching `X-Acting-User`
-3. Verify user exists and is active
-4. Perform action with that user as owner
+### Component 5: Author Swap Module (`access_mcp_author`)
+
+**Location**: `web/modules/custom/access_mcp_author/`
+
+**Purpose**: Small module that intercepts requests from the service account and:
+1. Reads `X-Acting-User` header
+2. Looks up Drupal user by `field_access_id`
+3. Validates acting user has permission for the action
+4. Changes node owner to acting user
+
+**Hooks**:
+- `hook_node_presave()` - For create/update operations
+- `hook_node_predelete()` - For delete operations
+
+→ *See [Announcements API Spec](./drupal-announcements-api-spec.md) for implementation details*
 
 ---
 
 ## Drupal Implementation Requirements
 
-### New Module: `access_mcp_auth`
+### Key Auth Module (Contrib)
 
-A shared authentication module that can be used by all MCP-facing API modules.
+Install and configure:
+```bash
+composer require drupal/key_auth
+drush en key_auth
+```
 
-**Provides**:
-1. JWT generation service for authenticated pages
-2. API key validation service
-3. User lookup by ACCESS ID
-4. Shared middleware for MCP API endpoints
+Configure at `/admin/config/system/key-auth`:
+- Enable header detection
+- Set header name (e.g., `api-key`)
+
+### Service Account Setup
+
+Create a Drupal user:
+
+| Field | Value |
+|-------|-------|
+| Username | `mcp_service` |
+| Email | `mcp-service@access-ci.org` |
+| Role | `mcp_service_role` (custom) |
+
+Role permissions:
+- `create access_news content`
+- `edit any access_news content`
+- `delete any access_news content`
+- `use jsonapi`
 
 ### JWT Key Management
 
@@ -184,22 +232,6 @@ A shared authentication module that can be used by all MCP-facing API modules.
 - Better for multi-environment deployments
 
 **Recommendation**: Start with Drupal Key module for simplicity; migrate to external management if needed.
-
-### Service API Key Management
-
-A **single shared service key** is used by all MCP servers:
-
-| Key ID | Purpose | Used By |
-|--------|---------|---------|
-| `mcp_service_key` | All MCP API calls | All MCP servers |
-
-**Why a single key (not per-server)?**
-- All MCP servers run in the same trusted environment (n8n)
-- User identity (`X-Acting-User`) provides per-action authorization
-- The API key just validates "this is trusted MCP infrastructure"
-- Simpler to manage, deploy, and rotate
-
-Store via Drupal Key module. Rotate periodically.
 
 ---
 
@@ -237,44 +269,49 @@ All authenticated API operations must log:
 
 ## Implementation Phases
 
-### Phase 1: Drupal Foundation
+### Phase 1: Drupal Setup
 
-**Scope**: Create `access_mcp_auth` module with core services
+**Scope**: Configure Drupal for JSON:API writes with service account
 
-- [ ] JWT generation service
-- [ ] API key validation service
-- [ ] User lookup by ACCESS ID
-- [ ] Key configuration via Key module
+- [ ] Install Key Auth module
+- [ ] Create `mcp_service` user account
+- [ ] Create `mcp_service_role` with permissions
+- [ ] Generate API key for service account
+- [ ] Enable JSON:API writes (`read_only: false`)
+- [ ] Test JSON:API create/update/delete with service account
+
+**Deliverable**: Service account can create content via JSON:API
+
+### Phase 2: Author Swap Module
+
+**Scope**: Create `access_mcp_author` module
+
+- [ ] Implement `hook_node_presave()` for author swap
+- [ ] Implement `hook_node_predelete()` for delete validation
+- [ ] Add validation (tags, coordinator permission, ownership)
+- [ ] Add logging for audit trail
 - [ ] Unit tests
 
-**Deliverable**: Shared auth infrastructure for MCP APIs
+**Deliverable**: Requests from service account correctly attributed to acting user
 
-### Phase 2: JWT Integration with QA Bot
+### Phase 3: JWT Integration
 
 **Scope**: Generate and pass JWT to QA Bot
 
-- [ ] Add JWT to QA Bot page context (drupalSettings or prop)
-- [ ] Update QA Bot to accept and pass token
-- [ ] Test token flow end-to-end (without MCP integration)
+- [ ] JWT generation service in Drupal
+- [ ] Add JWT to QA Bot page context
+- [ ] Update QA Bot to pass token with requests
+- [ ] Test token flow end-to-end
 
 **Deliverable**: JWT available in QA Bot for authenticated users
 
-### Phase 3: First API Module (Announcements)
-
-**Scope**: Use auth infrastructure in Announcements API
-
-- [ ] `access_announcements_api` uses `access_mcp_auth` services
-- [ ] Integration test with mock MCP calls
-- [ ] Deploy to staging
-
-**Deliverable**: Working authenticated API for announcements
-
 ### Phase 4: MCP Server Integration
 
-**Scope**: MCP server validates JWT and calls Drupal API
+**Scope**: MCP server validates JWT and calls Drupal JSON:API
 
-- [ ] Add JWT validation to announcements MCP server
-- [ ] Configure public key and API key
+- [ ] Add JWT validation to MCP server
+- [ ] Add JSON:API client for Drupal calls
+- [ ] Pass `X-Acting-User` header from validated JWT
 - [ ] End-to-end test: QA Bot → MCP → Drupal
 
 **Deliverable**: Complete authentication flow working
@@ -285,9 +322,13 @@ All authenticated API operations must log:
 
 ### Drupal Configuration
 
+- [ ] Key Auth module installed and configured
+- [ ] `mcp_service` user account created
+- [ ] `mcp_service_role` role with permissions
+- [ ] API key generated for service account
+- [ ] JSON:API writes enabled
+- [ ] `access_mcp_author` module enabled
 - [ ] JWT private key stored in Key module
-- [ ] Service API key(s) stored in Key module
-- [ ] `access_mcp_auth` module enabled
 - [ ] QA Bot page includes JWT in user context
 
 ### MCP Server Configuration
@@ -297,8 +338,8 @@ Environment variables needed (shared across all MCP servers):
 | Variable | Description |
 |----------|-------------|
 | `DRUPAL_JWT_PUBLIC_KEY` | PEM-encoded public key for JWT validation |
-| `MCP_SERVICE_KEY` | Shared service API key for calling Drupal APIs |
-| `DRUPAL_BASE_URL` | Base URL for Drupal API calls |
+| `DRUPAL_SERVICE_ACCOUNT_KEY` | API key for `mcp_service` user |
+| `DRUPAL_BASE_URL` | Base URL for Drupal JSON:API calls |
 | `JWT_AUDIENCE` | Expected audience claim (e.g., `mcp://actions`) |
 | `JWT_ISSUER` | Expected issuer claim (e.g., `https://support.access-ci.org`) |
 

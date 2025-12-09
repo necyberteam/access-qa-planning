@@ -1,416 +1,398 @@
 # Drupal Announcements API Specification
 
 > **For**: Drupal Developer
-> **Module**: `access_announcements_api`
+> **Module**: `access_mcp_author`
 > **Priority**: Pilot for MCP Action Tools
-> **Related**: [Events Actions Plan](./05-events-actions.md) (future Phase 2)
+> **Related**: [MCP Action Tools](./05-events-actions.md) | [MCP Authentication](./06-mcp-authentication.md)
 
 ## Overview
 
-Create a new Drupal module that exposes authenticated API endpoints for managing Announcements (`access_news` content type). This enables the AI QA Bot to create, update, and delete announcements on behalf of authenticated users.
+Enable the AI QA Bot to create, update, and delete announcements on behalf of authenticated users using **Drupal's built-in JSON:API** with a service account pattern.
 
-### Why Announcements First (Before Events)
+### Approach
 
-| Factor | Announcements | Events |
-|--------|---------------|--------|
-| **Field complexity** | Simple - title, body, optional metadata | Complex - dates, locations, registration, recurrence |
-| **Content type** | `access_news` (standard node) | `eventseries` (recurring_events module) |
-| **Risk level** | Low - internal communications | Same |
-| **Development effort** | Lower | Higher |
+Instead of building custom API endpoints, we:
+1. Use standard JSON:API with the [Key Auth](https://www.drupal.org/project/key_auth) module
+2. Create a service account (`mcp_service`) that the MCP server authenticates as
+3. Build a small module (`access_mcp_author`) that changes the content author to the acting user
+
+### Why This Approach
+
+| Factor | Custom Endpoints | JSON:API + Service Account |
+|--------|------------------|---------------------------|
+| API maintenance | Must maintain custom code | Uses Drupal core |
+| Authentication | Custom implementation | Key Auth module (standard) |
+| Validation | Must implement | Built-in JSON:API validation |
+| Custom code needed | Full CRUD endpoints | Small hook module only |
+| Request format | Simple JSON | JSON:API format (verbose but standard) |
+
+---
+
+## Architecture
+
+```
+┌─────────────┐      ┌─────────────┐      ┌─────────────┐      ┌─────────────┐
+│ MCP Server  │─────▶│  Key Auth   │─────▶│  JSON:API   │─────▶│    Node     │
+│             │      │  (Drupal)   │      │  (Drupal)   │      │   Created   │
+└─────────────┘      └─────────────┘      └─────────────┘      └─────────────┘
+       │                   │                    │                     │
+       │ api-key: xxx      │ Authenticates as   │                     │
+       │ X-Acting-User:    │ mcp_service user   │                     │
+       │ jsmith@access-ci  │                    │                     │
+       │                   │                    │ hook_node_presave   │
+       │                   │                    │ changes uid to      │
+       │                   │                    │ acting user         │
+```
+
+---
+
+## Setup Requirements
+
+### 1. Install Key Auth Module
+
+```bash
+composer require drupal/key_auth
+drush en key_auth
+```
+
+### 2. Create Service Account
+
+Create a Drupal user for the MCP server:
+
+| Field | Value |
+|-------|-------|
+| Username | `mcp_service` |
+| Email | `mcp-service@access-ci.org` |
+| Status | Active |
+| Roles | Custom role with permissions (see below) |
+
+### 3. Configure Key Auth
+
+1. Go to `/admin/config/system/key-auth`
+2. Enable **Header** detection method
+3. Set header name: `api-key` (or your preference)
+4. Generate a key for the `mcp_service` user
+
+### 4. Service Account Permissions
+
+Create a role `mcp_service_role` with:
+
+| Permission | Purpose |
+|------------|---------|
+| `access content` | View content |
+| `create access_news content` | Create announcements |
+| `edit any access_news content` | Edit announcements (author changed in hook) |
+| `delete any access_news content` | Delete announcements (validated in hook) |
+| `use jsonapi` | Access JSON:API endpoints |
+
+**Note**: The actual authorization (can this user create/edit/delete?) is validated in the hook based on the acting user, not the service account.
+
+---
+
+## Module: `access_mcp_author`
+
+A small module that:
+1. Detects requests from the `mcp_service` account
+2. Reads the `X-Acting-User` header
+3. Changes node ownership to the acting user
+4. Validates the acting user has permission for the action
+
+### Module Structure
+
+```
+web/modules/custom/access_mcp_author/
+├── access_mcp_author.info.yml
+├── access_mcp_author.module
+└── src/
+    └── EventSubscriber/
+        └── McpAuthorSubscriber.php  (optional: for validation)
+```
+
+### Key Functionality
+
+**hook_node_presave**: For create/update operations
+- Verify request is from `mcp_service` user
+- Read `X-Acting-User` header
+- Look up Drupal user by `field_access_id`
+- Validate acting user's permissions (coordinator check, etc.)
+- Set node owner to acting user
+
+**hook_node_predelete**: For delete operations
+- Same validation pattern
+- Verify acting user owns the node or is admin
+
+### Validation Logic to Include
+
+Reuse existing validation from `access_news.module`:
+
+| Validation | Source | Apply To |
+|------------|--------|----------|
+| Tag count (1-6) | `access_news_tags_validate_element()` | Create, Update |
+| Tags must exist | Field validation | Create, Update |
+| Coordinator permission | `access_news_validate()` | Create, Update (when affinity group set) |
+| Owner check | New | Update, Delete |
+
+---
+
+## JSON:API Endpoints
+
+With JSON:API enabled for write operations (`read_only: false`), these endpoints become available:
+
+### Create Announcement
+
+**POST** `/jsonapi/node/access_news`
+
+```
+api-key: <mcp_service_key>
+X-Acting-User: jsmith@access-ci.org
+Content-Type: application/vnd.api+json
+```
+
+```json
+{
+  "data": {
+    "type": "node--access_news",
+    "attributes": {
+      "title": "New GPU Resources Available",
+      "status": false,
+      "body": {
+        "value": "<p>We're pleased to announce...</p>",
+        "format": "basic_html"
+      },
+      "field_published_date": "2025-01-15",
+      "field_affiliation": "ACCESS Collaboration"
+    },
+    "relationships": {
+      "field_tags": {
+        "data": [
+          { "type": "taxonomy_term--tags", "id": "uuid-of-tag-1" },
+          { "type": "taxonomy_term--tags", "id": "uuid-of-tag-2" }
+        ]
+      },
+      "field_affinity_group_node": {
+        "data": { "type": "node--affinity_group", "id": "uuid-of-group" }
+      }
+    }
+  }
+}
+```
+
+**Notes:**
+- `status: false` creates as draft (unpublished)
+- Relationships require UUIDs (MCP server fetches these via JSON:API reads)
+
+### Update Announcement
+
+**PATCH** `/jsonapi/node/access_news/{uuid}`
+
+Same format as create, but include only fields to update.
+
+### Delete Announcement
+
+**DELETE** `/jsonapi/node/access_news/{uuid}`
+
+```
+api-key: <mcp_service_key>
+X-Acting-User: jsmith@access-ci.org
+```
+
+### Read Operations (for MCP Server)
+
+These are already available (JSON:API is read-enabled):
+
+| Endpoint | Purpose |
+|----------|---------|
+| `GET /jsonapi/taxonomy_term/tags` | List available tags (with UUIDs) |
+| `GET /jsonapi/node/affinity_group` | List affinity groups |
+| `GET /jsonapi/node/access_news?filter[uid.id]=xxx` | List user's announcements |
 
 ---
 
 ## Content Type Reference
 
 **Machine name**: `access_news`
-**Human name**: Announcement
 
 ### Fields
 
 | Field | Machine Name | Type | Required | Notes |
 |-------|--------------|------|----------|-------|
 | Title | `title` | string | **Yes** | Node title |
-| Body | `body` | text_with_summary | No | **basic_html format only** (see constraints) |
+| Body | `body` | text_with_summary | No | **basic_html format only** |
 | Published Date | `field_published_date` | datetime | No | When to display |
 | Affiliation | `field_affiliation` | list_string | No | `ACCESS Collaboration` or `Community` |
-| Affinity Group Node | `field_affinity_group_node` | entity_reference | No | References affinity_group nodes (**coordinator permission required**) |
-| Affinity Group | `field_affinity_group` | entity_reference | No | Auto-set from node (see presave hook) |
-| Tags | `field_tags` | entity_reference | No | **Must be existing** `tags` taxonomy terms (1-6 required) |
-| Image | `field_image` | image | No | Optional (defer to Phase 2) |
-| External Link | `field_news_external_link` | link | No | Link to external source |
+| Affinity Group Node | `field_affinity_group_node` | entity_reference | No | **Coordinator permission required** |
+| Affinity Group | `field_affinity_group` | entity_reference | No | Auto-set from node |
+| Tags | `field_tags` | entity_reference | **Yes** | 1-6 existing taxonomy terms |
 
-### Important Constraints from Existing Code
+### Validation Constraints
 
-The following validation rules exist in `access_news.module` and must be enforced by the API:
-
-1. **Body format**: Only `basic_html` format is allowed (configured in field settings)
-
-2. **Tags**:
-   - Must be existing taxonomy terms from the `tags` vocabulary
-   - Minimum 1 tag required, maximum 6 tags
-   - Tags are NOT auto-created; unknown tags should be rejected
-
-3. **Affinity Group assignment** (from `access_news_validate()`):
-   - Users can only assign an Affinity Group if they are a **Coordinator** of that group
-   - Coordinators are listed in the `field_coordinator` field on the affinity_group node
-   - Exception: users with `administrator` or `news_pm` roles can assign any group
-   - The `field_affinity_group` taxonomy term is auto-populated from `field_affinity_group_node` via the `access_news_node_presave()` hook
-
-4. **Affinity Group taxonomy**: When assigning an affinity group node, the corresponding taxonomy term must exist (validated in existing code)
-
----
-
-## Authentication Pattern
-
-All endpoints use a two-header authentication approach:
-
-| Header | Value | Purpose |
-|--------|-------|---------|
-| `X-API-Key` | Service key | Validates the calling service (MCP server) |
-| `X-Acting-User` | ACCESS ID (e.g., `user@access-ci.org`) | Identifies who is performing the action |
-
-**Flow:**
-1. MCP server validates user's JWT token
-2. MCP server extracts `access_id` from validated token
-3. MCP server calls Drupal API with service key + acting user headers
-4. Drupal looks up user by `field_access_id` and performs action as that user
-
-**Security principle**: User tokens are never passed through to Drupal. The MCP server acts as a trusted intermediary.
-
----
-
-## API Endpoints
-
-### Base Path: `/api/announcements/manage`
-
-### 1. Create Announcement
-
-**POST** `/api/announcements/manage`
-
-Creates a new announcement in **draft** status (unpublished).
-
-| Parameter | Type | Required | Notes |
-|-----------|------|----------|-------|
-| `title` | string | **Yes** | Announcement title |
-| `body` | string | No | HTML content (**basic_html format enforced**) |
-| `published_date` | date (YYYY-MM-DD) | No | Display date |
-| `affiliation` | string | No | `ACCESS Collaboration` or `Community` |
-| `affinity_group` | string | No | Group ID or name (**user must be coordinator**) |
-| `tags` | array of strings | **Yes** | 1-6 tag names (**must be existing taxonomy terms**) |
-
-**Success Response (201):**
-- `success`: true
-- `announcement_id`: integer
-- `status`: "draft"
-- `message`: User-friendly confirmation
-- `edit_url`: URL to edit in Drupal
-- `view_url`: URL to view (once published)
-
----
-
-### 2. Update Announcement
-
-**PATCH** `/api/announcements/manage/{id}`
-
-Updates an existing announcement. User must be the owner or an admin.
-
-All fields from Create are accepted; only include fields to update.
-
-**Success Response (200):**
-- `success`: true
-- `announcement_id`: integer
-- `status`: current status
-- `message`: User-friendly confirmation
-- `edit_url`: URL to edit
-
-**Error Response (403):** User doesn't own the announcement
-
----
-
-### 3. Delete Announcement
-
-**DELETE** `/api/announcements/manage/{id}`
-
-Deletes an announcement. User must be the owner or an admin.
-
-**Success Response (200):**
-- `success`: true
-- `message`: Confirmation
-
----
-
-### 4. List User's Announcements
-
-**GET** `/api/announcements/manage/mine`
-
-Returns announcements created by the authenticated user.
-
-| Parameter | Default | Notes |
-|-----------|---------|-------|
-| `status` | `all` | Filter: `draft`, `published`, or `all` |
-| `limit` | 20 | Max 100 |
-| `offset` | 0 | Pagination |
-
-**Response (200):**
-- `total`: Total count matching filters
-- `items`: Array of announcement summaries with id, title, status, created, edit_url
+| Constraint | Enforced By |
+|------------|-------------|
+| Body format = basic_html | Field configuration |
+| Tags: 1-6 required, must exist | `access_mcp_author` hook |
+| Affinity group: coordinator only | `access_mcp_author` hook |
+| Author = acting user | `access_mcp_author` hook |
 
 ---
 
 ## Authorization Matrix
 
-| Action | Any Auth User | Owner | Admin |
-|--------|---------------|-------|-------|
-| Create announcement (draft) | ✅ | - | ✅ |
-| List own announcements | ✅ | - | ✅ |
-| View own announcement | ✅ | - | ✅ |
-| Update announcement | ❌ | ✅ | ✅ |
-| Delete announcement | ❌ | ✅ | ✅ |
-| Publish announcement | ❌ | ❌ | ✅ |
-
-**Key constraint**: Publishing is NOT exposed via this API. All announcements created via API start as drafts and must be published through the Drupal admin UI.
+| Action | Acting User Requirement |
+|--------|------------------------|
+| Create announcement | Any authenticated user (becomes owner) |
+| Update announcement | Must be owner OR admin |
+| Delete announcement | Must be owner OR admin |
+| Assign affinity group | Must be coordinator of that group OR admin/news_pm |
+| Publish announcement | NOT via API (staff only in Drupal UI) |
 
 ---
 
-## Error Responses
+## Configuration Changes
 
-All error responses follow this format:
+### Enable JSON:API Writes
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `success` | boolean | Always `false` |
-| `error` | string | Error code (e.g., `validation_error`, `not_found`, `forbidden`) |
-| `message` | string | Human-readable message |
-| `field` | string | (optional) Field that caused validation error |
+Update `jsonapi.settings.yml`:
 
-### HTTP Status Codes
-
-| Code | Meaning |
-|------|---------|
-| 201 | Created successfully |
-| 200 | Operation successful |
-| 400 | Bad request / validation error |
-| 401 | Missing or invalid API key |
-| 403 | User doesn't have permission |
-| 404 | Announcement not found |
-| 500 | Server error |
-
----
-
-## Module Requirements
-
-### Dependencies
-- `node` (core)
-- `key` module (for API key storage - already installed)
-
----
-
-## Existing Drupal Patterns to Follow
-
-The codebase already has patterns for APIs and key management. Use these existing approaches:
-
-### 1. Key Module for API Key Storage (Existing)
-
-| Reference | Location |
-|-----------|----------|
-| `SimpleListsApi` | `access_affinitygroup/src/Plugin/SimpleListsApi.php` |
-| `ConstantContactApi` | `access_affinitygroup/src/Plugin/ConstantContactApi.php` |
-| `AiReferenceGenerator` | `access_llm/src/AiReferenceGenerator.php` |
-
-Use `key.repository` service to retrieve key values. For this module:
-- Key ID: `mcp_service_key`
-- Set via: `drush key:set mcp_service_key "your-key"`
-- Shared across all MCP servers (see [06-mcp-authentication.md](./06-mcp-authentication.md))
-
-### 2. Custom Controller with JsonResponse (Existing)
-
-| Reference | Location | Purpose |
-|-----------|----------|---------|
-| `JsonApiAccessController` | `access/src/Controller/JsonApiAccessController.php` | Organization autocomplete |
-| `JsonApiCCController` | `campuschampions/src/Controller/JsonApiCCController.php` | Carnegie code lookup |
-
-Follow this pattern: custom routing → controller method → `JsonResponse`
-
-### 3. Views REST Export (Existing, Read-Only)
-
-The existing `/api/2.2/announcements` endpoint uses Views REST export (`views.view.access_announcements.yml`). Good for read-only queries but not suitable for write operations.
-
-### 4. What's New (Build as Shared Service)
-
-The following are **new** and should be built as a **shared service** for reuse by future APIs (Events, etc.):
-
-| Component | Description |
-|-----------|-------------|
-| `X-API-Key` validation | Validate service key from Key module |
-| `X-Acting-User` handling | Look up Drupal user by `field_access_id` |
-| Permission checking | Verify user can perform action |
-
-**Recommendation**: Create `McpApiAuthenticator` service in a base module (`access_mcp_auth`) that API modules can depend on.
-
-### 5. Logging (Existing)
-
-Use Drupal's logger service (`\Drupal::logger('module_name')`) - same pattern used throughout codebase.
-
-Log: action performed, user (from `X-Acting-User`), entity affected, success/failure
-
----
-
-## Testing Requirements
-
-### Test Cases
-
-**Authentication:**
-1. Create without API key - Returns 401
-2. Create without X-Acting-User - Returns 401
-3. Create with unknown user - Returns 401
-
-**Basic CRUD:**
-4. Create with valid credentials - Returns 201, creates draft
-5. Update own announcement - Returns 200
-6. Update someone else's announcement - Returns 403
-7. Delete own announcement - Returns 200
-8. Delete someone else's announcement - Returns 403
-9. List my announcements - Returns only current user's
-10. Invalid announcement ID - Returns 404
-
-**Tag Validation:**
-11. Create with no tags - Returns 400 (minimum 1 required)
-12. Create with 7+ tags - Returns 400 (maximum 6 allowed)
-13. Create with non-existent tag - Returns 400 with helpful error
-14. Create with valid existing tags - Returns 201
-
-**Affinity Group Validation:**
-15. Assign affinity group as non-coordinator - Returns 403
-16. Assign affinity group as coordinator - Returns 201
-17. Assign affinity group as admin - Returns 201 (bypasses coordinator check)
-18. Assign affinity group as news_pm role - Returns 201 (bypasses coordinator check)
-
-**Body Format:**
-19. Create with valid basic_html - Returns 201
-20. Create with disallowed HTML tags - Body sanitized or rejected
-
-### Manual Testing
-
-Provide cURL examples in module README for testing each endpoint.
-
----
-
-## Deployment Checklist
-
-1. [ ] Module installed and enabled
-2. [ ] API key set via Key module
-3. [ ] Test user exists with `field_access_id` populated
-4. [ ] All endpoints tested via cURL
-5. [ ] Logging verified
-6. [ ] Deployed to staging
-7. [ ] MCP server configured with API key
-8. [ ] End-to-end test with MCP server
-
----
-
-## Future Considerations (Phase 2)
-
-- **Image uploads**: Support for announcement images
-- **Scheduled publishing**: Set future publish date via API
-- **Bulk operations**: Create/update multiple announcements
-- **Webhook notifications**: Notify MCP server when announcements are published
-
----
-
-## Resolved Design Decisions
-
-Based on existing Drupal validation logic in `access_news.module`:
-
-| Question | Decision | Rationale |
-|----------|----------|-----------|
-| Tag handling | Reject unknown tags | Existing form validation requires existing taxonomy terms |
-| Body format | basic_html only | Field config restricts to `basic_html` format |
-| Affinity group permissions | Coordinator only | Existing `access_news_validate()` enforces this |
-| Tag count | 1-6 required | Existing `access_news_tags_validate_element()` enforces this |
-
-## Open Questions
-
-1. **Rate limiting**: What limits per user per hour?
-
----
-
-## Supporting MCP Tools / API Endpoints
-
-Because tags must be existing taxonomy terms and affinity groups require coordinator permission, the AI agent needs ways to discover valid options. Consider these supporting endpoints:
-
-### Option A: Add to Announcements API Module
-
-#### GET `/api/announcements/manage/tags`
-
-Returns available tags from the `tags` vocabulary.
-
-| Parameter | Default | Notes |
-|-----------|---------|-------|
-| `search` | - | Filter by name prefix |
-| `limit` | 50 | Max results |
-
-**Response:**
-```json
-{
-  "items": [
-    {"id": 123, "name": "gpu"},
-    {"id": 124, "name": "hpc"}
-  ]
-}
+```yaml
+read_only: false  # Changed from true
 ```
 
-#### GET `/api/announcements/manage/my-affinity-groups`
+**Security consideration**: This enables writes for ALL content types via JSON:API. The `access_mcp_author` module should validate that only authorized operations succeed.
 
-Returns affinity groups the authenticated user can post to (where they are coordinator, or if admin/news_pm).
-
-**Response:**
-```json
-{
-  "items": [
-    {"id": 456, "name": "AI/CI", "group_id": "aici.access-ci.org"},
-    {"id": 457, "name": "Campus Champions", "group_id": "champions.access-ci.org"}
-  ]
-}
-```
-
-### Option B: Separate MCP Tools (Read-Only)
-
-Add tools to the existing announcements MCP server:
-
-- `list_tags` - Returns available tags (no auth required, public data)
-- `list_my_affinity_groups` - Returns groups user coordinates (requires auth)
-
-### Recommendation
-
-**Option A** is simpler for the pilot - keep everything in one module. The MCP server can call these endpoints to populate the AI's context before asking users about tags/groups.
-
-For tag selection specifically, the existing form has AI-powered tag suggestion (using `access_llm.ai_references_generator`). Consider whether the MCP flow should:
-1. Accept user-provided tags and validate them, OR
-2. Suggest tags based on body content (matching existing UX)
+Alternative: Use [JSON:API Resources](https://www.drupal.org/project/jsonapi_resources) module to create custom endpoints with controlled access.
 
 ---
 
-## Implementation Notes
+## Implementation Checklist
 
-### Reusing Existing Validation Logic
+### Setup
+- [ ] Install and configure Key Auth module
+- [ ] Create `mcp_service` user account
+- [ ] Create `mcp_service_role` with appropriate permissions
+- [ ] Generate API key for service account
+- [ ] Enable JSON:API writes (or configure JSON:API Resources)
 
-The validation logic in `access_news.module` should ideally be reused rather than duplicated:
+### Module Development
+- [ ] Create `access_mcp_author` module
+- [ ] Implement `hook_node_presave()` for author swap
+- [ ] Implement `hook_node_predelete()` for delete validation
+- [ ] Add tag validation (1-6 count)
+- [ ] Add coordinator permission validation
+- [ ] Add owner validation for update/delete
+- [ ] Add logging for audit trail
 
-- `access_news_validate()` - Coordinator permission check
-- `access_news_tags_validate_element()` - Tag count validation
-- `update_affinity_group()` - Auto-populate taxonomy from node
+### Testing
+- [ ] Test create via JSON:API with service account
+- [ ] Test author is correctly swapped to acting user
+- [ ] Test tag validation (min/max, existence)
+- [ ] Test coordinator permission enforcement
+- [ ] Test update/delete ownership checks
+- [ ] Test with invalid `X-Acting-User`
 
-**Options:**
-1. **Extract to service**: Refactor validation into a service class that both the form and API can use
-2. **Call existing functions**: Have API controller call the existing functions directly
-3. **Duplicate with care**: Implement in API module but document the dependency
+### Deployment
+- [ ] Deploy module to staging
+- [ ] Configure service account on staging
+- [ ] Test with MCP server
+- [ ] Deploy to production
 
-Option 1 is cleanest but requires touching existing code. Option 2 may work if functions are accessible. Option 3 is fastest but creates maintenance burden.
+---
+
+## Testing Examples
+
+### Create Announcement (cURL)
+
+```bash
+curl -X POST https://support.access-ci.org/jsonapi/node/access_news \
+  -H "api-key: your-service-key" \
+  -H "X-Acting-User: testuser@access-ci.org" \
+  -H "Content-Type: application/vnd.api+json" \
+  -H "Accept: application/vnd.api+json" \
+  -d '{
+    "data": {
+      "type": "node--access_news",
+      "attributes": {
+        "title": "Test Announcement",
+        "status": false,
+        "body": {
+          "value": "<p>Test content</p>",
+          "format": "basic_html"
+        }
+      },
+      "relationships": {
+        "field_tags": {
+          "data": [
+            {"type": "taxonomy_term--tags", "id": "tag-uuid-here"}
+          ]
+        }
+      }
+    }
+  }'
+```
+
+### Get Tags (for UUID lookup)
+
+```bash
+curl https://support.access-ci.org/jsonapi/taxonomy_term/tags \
+  -H "Accept: application/vnd.api+json"
+```
+
+---
+
+## Error Handling
+
+The module should return appropriate JSON:API errors:
+
+| Scenario | HTTP Status | Error |
+|----------|-------------|-------|
+| Missing `X-Acting-User` header | 400 | Custom error message |
+| Acting user not found | 403 | Forbidden |
+| Acting user not owner (update/delete) | 403 | Forbidden |
+| Not coordinator for affinity group | 403 | Forbidden |
+| Invalid tag count | 422 | Validation error |
+| Non-existent tag | 422 | Validation error |
+
+---
+
+## Logging
+
+All MCP operations should be logged:
+
+```php
+\Drupal::logger('access_mcp_author')->info(
+  '@action on @type @id by @acting_user (via mcp_service)',
+  [
+    '@action' => 'create',
+    '@type' => 'access_news',
+    '@id' => $node->id(),
+    '@acting_user' => $acting_user_id,
+  ]
+);
+```
+
+---
+
+## Security Considerations
+
+| Concern | Mitigation |
+|---------|------------|
+| Service account compromise | Limit permissions to specific content types; rotate key regularly |
+| Acting user spoofing | MCP server validates user JWT before setting header |
+| Unauthorized content types | Hook only processes specific bundles (access_news) |
+| Privilege escalation | Hook validates acting user permissions, not service account |
+
+---
+
+## Future: Events (Phase 2)
+
+The same pattern applies to Events:
+- Extend `access_mcp_author` to handle `eventseries` content type
+- Add event-specific validation (dates, locations)
+- Same service account, same authentication flow
 
 ---
 
 ## Related Documents
 
-- [Events Actions Plan](./05-events-actions.md) - Phase 2: Apply same pattern to Events
-- [Agent Architecture](./01-agent-architecture.md) - Overall system design
-- [n8n Events Management Plan](../n8n/EVENTS-MANAGEMENT-PLAN.md) - Detailed MCP/n8n integration (for Events, adaptable)
+- [MCP Action Tools](./05-events-actions.md) - Overall action tools strategy
+- [MCP Authentication](./06-mcp-authentication.md) - Authentication architecture
+- [Key Auth Module](https://www.drupal.org/project/key_auth) - Drupal module documentation

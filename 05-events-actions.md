@@ -48,18 +48,22 @@ Once patterns are proven:
 ## Architecture Summary
 
 ```
-User → QA Bot → n8n Orchestrator → MCP Server → Drupal API
+User → QA Bot → n8n Orchestrator → MCP Server → Drupal JSON:API
+                                       │              │
+                                       │              ├── Key Auth (service account)
+                                       │              └── access_mcp_author hook
                                        │
-                                       ├── Server validates user JWT
-                                       └── Calls Drupal with service API key + acting user
+                                       ├── Validates user JWT
+                                       └── Calls JSON:API as mcp_service + X-Acting-User header
 ```
 
 ### Key Principles
 
-1. **No Token Passthrough**: MCP server validates JWT, uses own API key for Drupal calls
-2. **Single Service Key**: One shared `mcp_service_key` for all MCP servers
-3. **User Attribution**: `X-Acting-User` header identifies who performed the action
-4. **Draft-First**: All content created via API starts unpublished
+1. **Service Account Pattern**: MCP server authenticates as `mcp_service` Drupal user
+2. **Standard JSON:API**: Uses Drupal's built-in JSON:API for CRUD operations
+3. **Key Auth Module**: Service account authenticated via `api-key` header
+4. **Author Swap Hook**: `access_mcp_author` module changes node author to acting user
+5. **Draft-First**: All content created via API starts unpublished
 
 → *Full details: [06-mcp-authentication.md](./06-mcp-authentication.md)*
 
@@ -86,23 +90,25 @@ User → QA Bot → n8n Orchestrator → MCP Server → Drupal API
 | Tags | Must be existing taxonomy terms (1-6 required) |
 | Affinity groups | User must be coordinator of the group |
 
-### Drupal Module: `access_announcements_api`
+### JSON:API Endpoints
+
+Uses standard Drupal JSON:API (no custom endpoints needed for CRUD):
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/api/announcements/manage` | POST | Create announcement (draft) |
-| `/api/announcements/manage/{id}` | PATCH | Update announcement |
-| `/api/announcements/manage/{id}` | DELETE | Delete announcement |
-| `/api/announcements/manage/mine` | GET | List user's announcements |
-| `/api/announcements/manage/tags` | GET | List available tags |
-| `/api/announcements/manage/my-affinity-groups` | GET | List groups user can post to |
+| `/jsonapi/node/access_news` | POST | Create announcement (draft) |
+| `/jsonapi/node/access_news/{uuid}` | PATCH | Update announcement |
+| `/jsonapi/node/access_news/{uuid}` | DELETE | Delete announcement |
+| `/jsonapi/node/access_news?filter[uid.id]=xxx` | GET | List user's announcements |
+| `/jsonapi/taxonomy_term/tags` | GET | List available tags |
+| `/jsonapi/node/affinity_group` | GET | List affinity groups |
 
 ### Implementation Checklist
 
-- [ ] Create `access_mcp_auth` shared module (authentication service)
-- [ ] Create `access_announcements_api` module
-- [ ] Implement CRUD endpoints with validation
-- [ ] Add supporting endpoints (tags, affinity groups)
+- [ ] Install Key Auth module
+- [ ] Create `mcp_service` user account and role
+- [ ] Enable JSON:API writes
+- [ ] Create `access_mcp_author` module (author swap + validation)
 - [ ] Tests
 - [ ] MCP server integration
 
@@ -194,12 +200,13 @@ These patterns apply to any authenticated action tool:
 
 | Pattern | Description |
 |---------|-------------|
-| JWT delegation | Drupal creates scoped JWT with user claims |
-| Single service key | One `mcp_service_key` for all MCP servers |
-| Acting-user header | `X-Acting-User` passes identity for audit/authorization |
+| Service account | `mcp_service` Drupal user for API access |
+| Key Auth | Standard module for API key authentication |
+| JSON:API | Drupal core for CRUD operations |
+| Acting-user header | `X-Acting-User` header identifies real user |
+| Author swap hook | `access_mcp_author` changes owner to acting user |
+| JWT for user identity | MCP server validates user JWT, extracts access_id |
 | Draft-first | Actions create drafts, not public content |
-| Conversational collection | Gather required info through dialogue |
-| Shared auth module | `access_mcp_auth` provides reusable authentication service |
 
 ---
 
