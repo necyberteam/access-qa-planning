@@ -84,7 +84,14 @@ Replace the current RAG LLM with an intelligent agent system:
 | 02 | [training-data.md](./02-training-data.md) | Data preparation | MCP extraction, Q&A templates, deduplication |
 | 03 | [review-system.md](./03-review-system.md) | Human review | Pre-training approval, post-deployment feedback, Web UI |
 | 04 | [model-training.md](./04-model-training.md) | Model & infrastructure | GH200 setup, model selection, pilot comparison |
-| 05 | [events-actions.md](./05-events-actions.md) | Pilot for action tools | Auth patterns, actions via conversation |
+| 05 | [events-actions.md](./05-events-actions.md) | MCP action tools | Announcements (Phase 1), Events (Phase 2) |
+| 06 | [mcp-authentication.md](./06-mcp-authentication.md) | Authentication architecture | JWT flow, Drupal integration, security |
+
+### Implementation Specs
+
+| Document | Purpose |
+|----------|---------|
+| [drupal-announcements-api-spec.md](./drupal-announcements-api-spec.md) | Drupal API spec for Announcements (Phase 1 pilot) |
 
 ## Reading Paths
 
@@ -97,8 +104,12 @@ The data pipeline docs describe a continuous flow:
 2. [03-review-system.md](./03-review-system.md) - Human review (before training + after deployment)
 3. [04-model-training.md](./04-model-training.md) - Training the fine-tuned model
 
-### Future: Action Tools
-[05-events-actions.md](./05-events-actions.md) - Pilot for AI agents to take actions on behalf of users
+### Action Tools (MCP Write Operations)
+
+For AI agents to take actions on behalf of users:
+1. [05-events-actions.md](./05-events-actions.md) - Overview: phased approach, key patterns
+2. [06-mcp-authentication.md](./06-mcp-authentication.md) - Authentication architecture details
+3. [drupal-announcements-api-spec.md](./drupal-announcements-api-spec.md) - Phase 1: Drupal developer spec
 
 ## Current Status
 

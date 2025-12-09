@@ -610,14 +610,35 @@ Each level maintains citation capability where possible.
 
 ---
 
-## Future: Authenticated Actions
+## Authenticated Actions
 
-The architecture supports authenticated operations:
+The architecture supports authenticated operations, enabling users to create content conversationally:
 
 ```
-User (logged in) ──▶ QA Bot ──▶ n8n ──▶ Events MCP ──▶ Drupal API
-                        │
-                        └── JWT token passed for user identity
+User (logged in) ──▶ QA Bot ──▶ n8n ──▶ MCP Server ──▶ Drupal API
+                        │                    │
+                        │                    ├── Validates user JWT
+                        └── JWT token        └── Calls Drupal with service key + acting user
 ```
 
-→ *Details: [Events Actions](./05-events-actions.md)* - Pilot for AI agents to take actions on behalf of users
+### Implementation Status
+
+| Phase | Content Type | Status |
+|-------|--------------|--------|
+| Phase 1 | Announcements | **Active** - simpler content type to establish patterns |
+| Phase 2 | Events | Planned - more complex (dates, recurrence, locations) |
+
+### Key Design Decisions
+
+- **Single service key**: One `mcp_service_key` shared by all MCP servers
+- **User attribution**: `X-Acting-User` header identifies who performed action
+- **Draft-first**: All API-created content starts unpublished
+- **Shared auth module**: `access_mcp_auth` provides reusable authentication service
+
+### Documentation
+
+| Document | Purpose |
+|----------|---------|
+| [MCP Action Tools](./05-events-actions.md) | Overview of action tools initiative |
+| [MCP Authentication](./06-mcp-authentication.md) | Authentication architecture details |
+| [Announcements API Spec](./drupal-announcements-api-spec.md) | Drupal developer spec for Phase 1 |
