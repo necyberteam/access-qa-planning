@@ -85,7 +85,8 @@ Replace the current RAG LLM with an intelligent agent system:
 | 03 | [review-system.md](./03-review-system.md) | Human review | Pre-training approval, post-deployment feedback, Web UI |
 | 04 | [model-training.md](./04-model-training.md) | Model & infrastructure | GH200 setup, model selection, pilot comparison |
 | 05 | [events-actions.md](./05-events-actions.md) | MCP action tools | Announcements (Phase 1), Events (Phase 2) |
-| 06 | [mcp-authentication.md](./06-mcp-authentication.md) | Authentication architecture | JWT flow, Drupal integration, security |
+| 06 | [mcp-authentication.md](./06-mcp-authentication.md) | Authentication architecture | OAuth 2.1, CILogon proxy, token strategy |
+| 07 | [backend-integration-spec.md](./07-backend-integration-spec.md) | Backend API contract | Service tokens, X-Acting-User, authorization patterns |
 
 ### Implementation Specs
 
@@ -108,8 +109,9 @@ The data pipeline docs describe a continuous flow:
 
 For AI agents to take actions on behalf of users:
 1. [05-events-actions.md](./05-events-actions.md) - Overview: phased approach, key patterns
-2. [06-mcp-authentication.md](./06-mcp-authentication.md) - Authentication architecture details
-3. [drupal-announcements-api-spec.md](./drupal-announcements-api-spec.md) - Phase 1: Drupal developer spec
+2. [06-mcp-authentication.md](./06-mcp-authentication.md) - OAuth 2.1 authentication with CILogon
+3. [07-backend-integration-spec.md](./07-backend-integration-spec.md) - Contract for backend API teams
+4. [drupal-announcements-api-spec.md](./drupal-announcements-api-spec.md) - Phase 1: Drupal developer spec
 
 ## Current Status
 

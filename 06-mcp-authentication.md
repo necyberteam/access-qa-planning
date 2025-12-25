@@ -1,380 +1,500 @@
-# MCP Authentication Architecture
+# MCP Authentication Architecture (OAuth 2.1)
 
-> **Related**: [Agent Architecture](./01-agent-architecture.md) | [MCP Action Tools](./05-events-actions.md) | [Announcements API Spec](./drupal-announcements-api-spec.md)
+> **Related**: [Agent Architecture](./01-agent-architecture.md) | [MCP Action Tools](./05-events-actions.md) | [Backend Integration Spec](./07-backend-integration-spec.md) | [Announcements API Spec](./drupal-announcements-api-spec.md)
 
 ## Overview
 
-This document describes how authenticated users can perform actions (create announcements, events, etc.) through the AI QA Bot system. The architecture ensures:
+This document describes OAuth 2.1 authentication for the ACCESS-CI MCP servers, enabling researchers to connect from Claude, ChatGPT, Copilot, and other MCP-compatible clients.
 
-- User identity is verified through existing CILogon/ACCESS authentication
-- Actions are attributed to the correct user for audit purposes
-- User credentials are never exposed to intermediate systems
-- MCP servers can make authorized API calls on behalf of users
+The architecture ensures:
+
+- User identity verified through CILogon
+- Actions attributed to the correct user for audit purposes
+- Standards-compliant OAuth 2.1 flow per MCP specification
+- Single redirect URI simplifies CILogon registration
+- No local installation required for end users
 
 ---
 
-## Architecture Overview
+## Use Case
+
+Researchers connect their AI tools to ACCESS-CI infrastructure:
+
+1. User adds `https://mcp.access-ci.org/mcp` to Claude, ChatGPT, or other MCP client
+2. MCP client initiates OAuth flow with ACCESS MCP server
+3. ACCESS MCP server redirects user to CILogon for authentication
+4. User authenticates via their institution (4000+ supported)
+5. User can now query ACCESS software, resources, allocations, XDMoD data
+6. Authorized users can create/edit announcements and events
+
+---
+
+## Authentication Flow
+
+The MCP server acts as an OAuth authorization server to MCP clients while delegating actual authentication to CILogon. This proxy pattern is the standard approach for MCP servers using third-party identity providers.
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────────┐
-│                      AUTHENTICATION FLOW OVERVIEW                                │
+│                         OAUTH PROXY AUTHENTICATION FLOW                          │
 ├─────────────────────────────────────────────────────────────────────────────────┤
 │                                                                                 │
-│   ┌──────────┐    ┌──────────┐    ┌──────────┐    ┌──────────┐    ┌──────────┐ │
-│   │  User    │    │  Drupal  │    │  QA Bot  │    │   MCP    │    │  Drupal  │ │
-│   │ Browser  │    │  (Auth)  │    │          │    │  Server  │    │ JSON:API │ │
-│   └────┬─────┘    └────┬─────┘    └────┬─────┘    └────┬─────┘    └────┬─────┘ │
-│        │               │               │               │               │        │
-│   1. Login via CILogon │               │               │               │        │
-│        │──────────────▶│               │               │               │        │
-│        │               │               │               │               │        │
-│   2. Drupal session    │               │               │               │        │
-│        │◀──────────────│               │               │               │        │
-│        │               │               │               │               │        │
-│   3. Page with QA Bot + JWT            │               │               │        │
-│        │◀──────────────│               │               │               │        │
-│        │               │               │               │               │        │
-│   4. User asks to create announcement  │               │               │        │
-│        │───────────────────────────────▶               │               │        │
-│        │               │               │               │               │        │
-│   5. QA Bot sends request + JWT        │               │               │        │
-│        │               │               │──────────────▶│               │        │
-│        │               │               │               │               │        │
-│   6. MCP validates JWT, extracts user  │               │               │        │
-│        │               │               │               │               │        │
-│   7. MCP calls JSON:API as service account + X-Acting-User header      │        │
-│        │               │               │               │──────────────▶│        │
-│        │               │               │               │               │        │
-│   8. Drupal hook changes author to acting user, creates content        │        │
-│        │               │               │               │◀──────────────│        │
-│        │               │               │               │               │        │
-│   9. Success response  │               │               │               │        │
-│        │◀──────────────────────────────────────────────│               │        │
-│        │               │               │               │               │        │
+│   ┌──────────┐         ┌──────────┐         ┌──────────┐         ┌──────────┐  │
+│   │   MCP    │         │  ACCESS  │         │ CILogon  │         │ Backend  │  │
+│   │  Client  │         │   MCP    │         │  (IdP)   │         │   APIs   │  │
+│   │          │         │  Server  │         │          │         │          │  │
+│   └────┬─────┘         └────┬─────┘         └────┬─────┘         └────┬─────┘  │
+│        │                    │                    │                    │         │
+│   1. User adds MCP server URL                    │                    │         │
+│        │                    │                    │                    │         │
+│   2. Client fetches OAuth metadata               │                    │         │
+│        │───────────────────▶│                    │                    │         │
+│        │◀──────────────────│                    │                    │         │
+│        │    (MCP server is the authorization server)                  │         │
+│        │                    │                    │                    │         │
+│   3. Authorization request to MCP server (PKCE)  │                    │         │
+│        │───────────────────▶│                    │                    │         │
+│        │                    │                    │                    │         │
+│   4. MCP server redirects to CILogon             │                    │         │
+│        │                    │───────────────────▶│                    │         │
+│        │                    │                    │                    │         │
+│   5. User authenticates (institution login)      │                    │         │
+│        │                    │                    │◀───────────────────▶│         │
+│        │                    │                    │     (browser)      │         │
+│        │                    │                    │                    │         │
+│   6. CILogon redirects to MCP server callback    │                    │         │
+│        │                    │◀──────────────────│                    │         │
+│        │                    │    (auth code)     │                    │         │
+│        │                    │                    │                    │         │
+│   7. MCP server exchanges code for CILogon token │                    │         │
+│        │                    │───────────────────▶│                    │         │
+│        │                    │◀──────────────────│                    │         │
+│        │                    │  (access_token, user info)              │         │
+│        │                    │                    │                    │         │
+│   8. MCP server redirects to MCP client callback │                    │         │
+│        │◀──────────────────│                    │                    │         │
+│        │   (MCP auth code)  │                    │                    │         │
+│        │                    │                    │                    │         │
+│   9. Client exchanges code for MCP token         │                    │         │
+│        │───────────────────▶│                    │                    │         │
+│        │◀──────────────────│                    │                    │         │
+│        │  (MCP access_token)│                    │                    │         │
+│        │                    │                    │                    │         │
+│  10. MCP tool calls with Bearer token            │                    │         │
+│        │───────────────────▶│                    │                    │         │
+│        │                    │                    │                    │         │
+│  11. Call backend with service token + X-Acting-User                  │         │
+│        │                    │────────────────────────────────────────▶│         │
+│        │                    │◀───────────────────────────────────────│         │
+│        │                    │                    │                    │         │
+│  12. Response to client     │                    │                    │         │
+│        │◀──────────────────│                    │                    │         │
+│                                                                                 │
 └─────────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## Approach: Service Account + JSON:API
+## Why the Proxy Pattern?
 
-Instead of custom API endpoints, we use:
-1. **Drupal JSON:API** for CRUD operations (standard Drupal)
-2. **Key Auth module** for service account authentication
-3. **Small custom module** (`access_mcp_author`) to swap author to acting user
+MCP clients (Claude, ChatGPT, etc.) each have different OAuth callback URLs. CILogon requires exact redirect URI matches with no wildcard support. The proxy pattern solves this:
 
-This minimizes custom code while leveraging Drupal's built-in capabilities.
+| Approach | Problem |
+|----------|---------|
+| Register every MCP client's callback with CILogon | Impractical — new clients require CILogon registration changes |
+| Use wildcards | CILogon doesn't support redirect URI wildcards |
+| **MCP server proxies OAuth** | **Single redirect URI; MCP server handles all clients** |
 
-→ *See [Announcements API Spec](./drupal-announcements-api-spec.md) for implementation details*
+With the proxy pattern:
 
----
+- CILogon sees only one client: the ACCESS MCP server
+- MCP clients see the ACCESS MCP server as their authorization server
+- Adding support for new MCP clients requires no CILogon changes
 
-## Key Principles
-
-### 1. Service Account Pattern
-
-The MCP server authenticates to Drupal as a service account (`mcp_service`), not as the end user:
-
-| Component | Value |
-|-----------|-------|
-| Service account | `mcp_service` (Drupal user) |
-| Authentication | Key Auth module (`api-key` header) |
-| Acting user | Passed via `X-Acting-User` header |
-| Author swap | `hook_node_presave()` in `access_mcp_author` module |
-
-### 2. No Token Passthrough to Drupal
-
-Per MCP specification, user tokens should NOT be forwarded to upstream APIs. Instead:
-
-- MCP server validates the user's JWT
-- MCP server authenticates to Drupal with its **own service account**
-- User identity is passed as a **header** (not a credential)
-
-### 3. Separation of Concerns
-
-| System | Responsibility |
-|--------|----------------|
-| **Drupal (Auth)** | User login, session, JWT generation |
-| **QA Bot** | Passes JWT with requests |
-| **MCP Server** | Validates JWT, authenticates as service account, passes acting user |
-| **Drupal (JSON:API)** | CRUD operations |
-| **access_mcp_author** | Validates acting user, swaps author, enforces permissions |
+This is the standard pattern used by Cloudflare, Stytch, and other production MCP deployments.
 
 ---
 
-## Components
+## Infrastructure
 
-### Component 1: Drupal JWT Generation
+### Current State
 
-**Location**: New module or extension to existing auth
+- 10 MCP servers with 24 tools deployed on Linode
+- Streamable HTTP transport
 
-**Trigger**: When page with QA Bot renders for authenticated user
+### Changes Required
 
-**JWT Claims**:
+| Component | Change |
+|-----------|--------|
+| MCP server | Add OAuth authorization server endpoints |
+| MCP server | Add OAuth proxy logic for CILogon |
+| MCP server | Add token generation/validation |
+| CILogon | Register single OAuth client |
+| DNS | Point `mcp.access-ci.org` to Linode |
 
-| Claim | Description | Example |
-|-------|-------------|---------|
-| `sub` | Drupal user ID | `12345` |
-| `access_id` | User's ACCESS ID | `jsmith@access-ci.org` |
-| `email` | User email | `jsmith@university.edu` |
-| `name` | Display name | `Jane Smith` |
-| `roles` | Drupal roles | `["authenticated", "announcement_creator"]` |
-| `exp` | Expiration (1 hour) | `1733360400` |
-| `iat` | Issued at | `1733356800` |
-| `aud` | Audience | `mcp://actions` |
-| `iss` | Issuer | `https://support.access-ci.org` |
+---
 
-**Signing**: RS256 (asymmetric) - Drupal holds private key, MCP servers have public key
+## OAuth Endpoints
 
-### Component 2: QA Bot Token Handling
+The MCP server exposes these OAuth endpoints to MCP clients:
 
-**Current state**: QA Bot receives user context props from Drupal:
-- `isLoggedIn`
-- `userEmail`
-- `userName`
-- `accessId`
+| Endpoint | Path | Purpose |
+|----------|------|---------|
+| Protected Resource Metadata | `/.well-known/oauth-protected-resource` | Advertises auth server location |
+| Authorization Server Metadata | `/.well-known/oauth-authorization-server` | OAuth configuration for clients |
+| Authorization | `/oauth/authorize` | Initiates auth flow, redirects to CILogon |
+| Token | `/oauth/token` | Exchanges codes for tokens |
+| Callback | `/oauth/callback` | Receives CILogon redirect |
 
-**New**: Add `userToken` prop containing the JWT
+### Protected Resource Metadata
 
-**Behavior**:
-- Include `userToken` in requests to n8n/MCP when performing authenticated actions
-- Token is opaque to QA Bot - just passed through
+**Endpoint**: `https://mcp.access-ci.org/.well-known/oauth-protected-resource`
 
-### Component 3: MCP Server JWT Validation
+Tells MCP clients where to find authorization server metadata.
 
-**Location**: MCP server (e.g., `@access-mcp/announcements`)
+### Authorization Server Metadata
 
-**Validation steps**:
-1. Verify JWT signature using Drupal's public key
-2. Check `exp` claim (not expired)
-3. Check `aud` claim (correct audience)
-4. Check `iss` claim (correct issuer)
-5. Extract `access_id` claim for the acting user
+**Endpoint**: `https://mcp.access-ci.org/.well-known/oauth-authorization-server`
 
-**On success**: Call Drupal JSON:API with service account credentials + `X-Acting-User` header
+Provides OAuth configuration:
 
-**On failure**: Return authentication error to QA Bot
+- Authorization endpoint
+- Token endpoint
+- Supported scopes
+- Supported grant types
+- PKCE support (required)
 
-### Component 4: Drupal Service Account + Key Auth
+---
 
-**Module**: [Key Auth](https://www.drupal.org/project/key_auth) (contrib)
+## CILogon Configuration
 
-**Setup**:
-1. Create `mcp_service` user account with appropriate role
-2. Configure Key Auth module for header-based authentication
-3. Generate API key for the service account
+### Single OAuth Client Registration
 
-**Request headers**:
+Register one OAuth client with CILogon:
+
+| Setting | Value |
+|---------|-------|
+| Client Name | ACCESS-CI MCP Server |
+| Callback URL | `https://mcp.access-ci.org/oauth/callback` |
+| Scopes | `openid profile email org.cilogon.userinfo` |
+| Client Type | Confidential |
+
+Only one redirect URI needed — the MCP server's callback endpoint.
+
+### CILogon Endpoints Used
+
+| Endpoint | URL |
+|----------|-----|
+| Authorization | `https://cilogon.org/authorize` |
+| Token | `https://cilogon.org/oauth2/token` |
+| Userinfo | `https://cilogon.org/oauth2/userinfo` |
+| JWKS | `https://cilogon.org/oauth2/certs` |
+
+### User Identity
+
+CILogon provides (with `org.cilogon.userinfo` scope):
+
+| Claim | Description | Use |
+|-------|-------------|-----|
+| `eppn` | eduPersonPrincipalName | **ACCESS ID** (canonical user identifier) |
+| `sub` | Unique user identifier | Token subject |
+| `email` | Email address | Contact/display |
+| `name` | Display name | UI display |
+| `idp` | Identity provider used | Audit |
+
+**Key mapping**: CILogon `eppn` = ACCESS ID. This is the canonical identifier used across all ACCESS systems.
+
+---
+
+## Token Strategy
+
+The MCP server issues its own JWT tokens after validating CILogon authentication. This provides:
+
+- Control over token lifetime and claims
+- Ability to include ACCESS-specific claims
+- Independent token revocation
+- Consistent token format for all MCP tools
+
+### MCP Token Claims
+
+| Claim | Value | Description |
+|-------|-------|-------------|
+| `iss` | `https://mcp.access-ci.org` | Issuer |
+| `sub` | User's ACCESS ID | Subject (= CILogon eppn) |
+| `aud` | `https://mcp.access-ci.org` | Audience |
+| `exp` | Issued + 1 hour | Expiration |
+| `iat` | Current time | Issued at |
+| `access_id` | User's ACCESS ID | Explicit ACCESS identifier |
+| `name` | Display name | From CILogon |
+| `email` | Email address | From CILogon |
+| `scope` | Granted scopes | What user can do |
+
+### Token Lifetime
+
+| Token | Lifetime | Notes |
+|-------|----------|-------|
+| Access token | 1 hour | Balance security with usability |
+| Refresh token | 7 days | For longer research sessions |
+
+---
+
+## Authorization
+
+### Scopes
+
+| Scope | Description | Access Level |
+|-------|-------------|--------------|
+| `openid` | OpenID Connect identity | Required |
+| `profile` | Name, ACCESS ID | Basic |
+| `email` | Email address | Basic |
+| `access:read` | Query ACCESS data | All authenticated users |
+| `access:write` | Create/edit content | Authorized roles only |
+
+### Tool Authorization
+
+| Tool Category | Required Scope |
+|---------------|----------------|
+| Software Discovery | `access:read` |
+| Compute Resources | `access:read` |
+| XDMoD Analytics | `access:read` |
+| Allocations | `access:read` |
+| Announcements (read) | `access:read` |
+| Announcements (write) | `access:write` |
+| Events (read) | `access:read` |
+| Events (write) | `access:write` |
+
+### Backend Authorization
+
+Scopes control access at the MCP layer. Fine-grained authorization happens at each backend:
+
+- MCP server checks: Does user have required scope?
+- Backend checks: Does user have permission for this specific action?
+
+See [Backend Integration Spec](./07-backend-integration-spec.md) for the backend authorization contract.
+
+---
+
+## Backend Integration
+
+For all backend API calls, the MCP server uses the service account pattern:
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                         BACKEND CALL PATTERN                                     │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                 │
+│   MCP Server                              Backend API                           │
+│       │                                        │                                │
+│       │   Authorization: Bearer {service_token}                                 │
+│       │   X-Acting-User: jsmith@access-ci.org                                   │
+│       │   X-Request-ID: 550e8400-e29b-...                                       │
+│       │───────────────────────────────────────▶│                                │
+│       │                                        │                                │
+│       │                          Backend validates:                             │
+│       │                          1. Service token (is this MCP server?)         │
+│       │                          2. Acting user (who is this for?)              │
+│       │                          3. Authorization (can they do this?)           │
+│       │                                        │                                │
+│       │◀───────────────────────────────────────│                                │
+│                                                                                 │
+└─────────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Headers Sent to Backends
 
 | Header | Value | Purpose |
 |--------|-------|---------|
-| `api-key` | Service account key | Authenticates as `mcp_service` user |
-| `X-Acting-User` | ACCESS ID | Identifies user to attribute action to |
+| `Authorization` | `Bearer {service_token}` | Authenticates MCP server to backend |
+| `X-Acting-User` | User's ACCESS ID | Identifies user for authorization/attribution |
+| `X-Request-ID` | UUID | Correlation ID for tracing |
 
-### Component 5: Author Swap Module (`access_mcp_author`)
+### Backend Responsibilities
 
-**Location**: `web/modules/custom/access_mcp_author/`
+Each backend API must:
 
-**Purpose**: Small module that intercepts requests from the service account and:
-1. Reads `X-Acting-User` header
-2. Looks up Drupal user by `field_access_id`
-3. Validates acting user has permission for the action
-4. Changes node owner to acting user
+1. Validate the service token (authenticate MCP server)
+2. Parse `X-Acting-User` header
+3. Look up user by ACCESS ID
+4. Apply authorization rules
+5. Attribute actions to the user
+6. Log with `X-Request-ID` for tracing
 
-**Hooks**:
-- `hook_node_presave()` - For create/update operations
-- `hook_node_predelete()` - For delete operations
-
-→ *See [Announcements API Spec](./drupal-announcements-api-spec.md) for implementation details*
-
----
-
-## Drupal Implementation Requirements
-
-### Key Auth Module (Contrib)
-
-Install and configure:
-```bash
-composer require drupal/key_auth
-drush en key_auth
-```
-
-Configure at `/admin/config/system/key-auth`:
-- Enable header detection
-- Set header name (e.g., `api-key`)
-
-### Service Account Setup
-
-Create a Drupal user:
-
-| Field | Value |
-|-------|-------|
-| Username | `mcp_service` |
-| Email | `mcp-service@access-ci.org` |
-| Role | `mcp_service_role` (custom) |
-
-Role permissions:
-- `create access_news content`
-- `edit any access_news content`
-- `delete any access_news content`
-- `use jsonapi`
-
-### JWT Key Management
-
-**Option A: Drupal Key Module**
-- Store private key in Drupal's Key module
-- Export public key for MCP servers
-- Key rotation via Drupal admin
-
-**Option B: External Key Management**
-- Keys stored in environment/secrets manager
-- Both Drupal and MCP servers reference same source
-- Better for multi-environment deployments
-
-**Recommendation**: Start with Drupal Key module for simplicity; migrate to external management if needed.
+Full specification: [Backend Integration Spec](./07-backend-integration-spec.md)
 
 ---
 
 ## Security Considerations
 
-### Token Security
+### OAuth Security
 
 | Risk | Mitigation |
 |------|------------|
-| Token theft | Short expiry (1 hour), HTTPS only |
-| Token replay | Include `iat` claim, consider nonce for sensitive ops |
-| Privilege escalation | Roles embedded in token, validated server-side |
-| Key compromise | Use asymmetric keys (RS256), rotate periodically |
+| Auth code interception | PKCE required (S256) |
+| Token theft | Short-lived tokens, HTTPS only |
+| Open redirect | Validate redirect URIs against registered values |
+| Token replay | Include `iat`, enforce expiration |
 
-### API Security
+### MCP-Specific Security
 
 | Risk | Mitigation |
 |------|------------|
-| API key exposure | Store in Drupal Key module, never in client code; single key simplifies rotation |
-| Unauthorized access | Validate both API key AND user identity |
-| CSRF | API endpoints are stateless, no session cookies |
-| Rate limiting | Implement per-user rate limits |
+| Prompt injection | Validate/sanitize tool inputs |
+| Unauthorized writes | Check scopes at MCP layer, permissions at backend |
+| Cross-client token use | Validate `aud` claim matches MCP server |
 
-### Audit Trail
+### Audit Logging
 
-All authenticated API operations must log:
+Log for all operations:
+
 - Timestamp
-- User ACCESS ID (from `X-Acting-User`)
-- Action performed
-- Entity affected (ID, type)
+- Request ID
+- User identifier (ACCESS ID)
+- MCP client (from token if available)
+- Tool invoked
+- Backend called
 - Success/failure
-- Calling service (from API key)
 
 ---
 
 ## Implementation Phases
 
-### Phase 1: Drupal Setup
+### Phase 1: CILogon Registration
 
-**Scope**: Configure Drupal for JSON:API writes with service account
+- [ ] Register OAuth client with CILogon
+- [ ] Configure callback URL: `https://mcp.access-ci.org/oauth/callback`
+- [ ] Request scopes: `openid profile email org.cilogon.userinfo`
+- [ ] Store client credentials securely
+- [ ] Test OAuth flow manually (browser + curl)
 
-- [ ] Install Key Auth module
-- [ ] Create `mcp_service` user account
-- [ ] Create `mcp_service_role` with permissions
-- [ ] Generate API key for service account
-- [ ] Enable JSON:API writes (`read_only: false`)
-- [ ] Test JSON:API create/update/delete with service account
+**Deliverable**: Working CILogon client credentials
 
-**Deliverable**: Service account can create content via JSON:API
+### Phase 2: OAuth Authorization Server
 
-### Phase 2: Author Swap Module
+- [ ] Implement `/.well-known/oauth-protected-resource`
+- [ ] Implement `/.well-known/oauth-authorization-server`
+- [ ] Implement `/oauth/authorize` (redirects to CILogon)
+- [ ] Implement `/oauth/callback` (receives CILogon redirect)
+- [ ] Implement `/oauth/token` (exchanges codes, issues tokens)
+- [ ] Implement token generation (JWT signing)
+- [ ] Implement PKCE validation
 
-**Scope**: Create `access_mcp_author` module
+**Deliverable**: MCP server acts as OAuth authorization server
 
-- [ ] Implement `hook_node_presave()` for author swap
-- [ ] Implement `hook_node_predelete()` for delete validation
-- [ ] Add validation (tags, coordinator permission, ownership)
-- [ ] Add logging for audit trail
-- [ ] Unit tests
+### Phase 3: Token Validation
 
-**Deliverable**: Requests from service account correctly attributed to acting user
+- [ ] Add token validation middleware to MCP tools
+- [ ] Validate JWT signature
+- [ ] Check issuer, audience, expiration
+- [ ] Extract `access_id` for backend calls
+- [ ] Implement scope checking
 
-### Phase 3: JWT Integration
+**Deliverable**: MCP tools require valid tokens
 
-**Scope**: Generate and pass JWT to QA Bot
+### Phase 4: Backend Integration
 
-- [ ] JWT generation service in Drupal
-- [ ] Add JWT to QA Bot page context
-- [ ] Update QA Bot to pass token with requests
-- [ ] Test token flow end-to-end
+- [ ] Implement service token management
+- [ ] Implement `X-Acting-User` header injection
+- [ ] Implement `X-Request-ID` generation
+- [ ] Work with backend teams to implement contract
+- [ ] Test end-to-end with Drupal (pilot backend)
 
-**Deliverable**: JWT available in QA Bot for authenticated users
+**Deliverable**: Authenticated users can perform actions via backends
 
-### Phase 4: MCP Server Integration
+### Phase 5: Client Testing
 
-**Scope**: MCP server validates JWT and calls Drupal JSON:API
+- [ ] Test connection from Claude (claude.ai)
+- [ ] Test connection from Claude Desktop
+- [ ] Test connection from ChatGPT
+- [ ] Test connection from VS Code/Cursor
+- [ ] Document any client-specific issues
 
-- [ ] Add JWT validation to MCP server
-- [ ] Add JSON:API client for Drupal calls
-- [ ] Pass `X-Acting-User` header from validated JWT
-- [ ] End-to-end test: QA Bot → MCP → Drupal
+**Deliverable**: Verified working with major MCP clients
 
-**Deliverable**: Complete authentication flow working
+### Phase 6: Documentation and Launch
 
----
+- [ ] Create user guide for connecting AI tools
+- [ ] Document available tools
+- [ ] Create troubleshooting guide
+- [ ] Announce to ACCESS community
 
-## Configuration Checklist
-
-### Drupal Configuration
-
-- [ ] Key Auth module installed and configured
-- [ ] `mcp_service` user account created
-- [ ] `mcp_service_role` role with permissions
-- [ ] API key generated for service account
-- [ ] JSON:API writes enabled
-- [ ] `access_mcp_author` module enabled
-- [ ] JWT private key stored in Key module
-- [ ] QA Bot page includes JWT in user context
-
-### MCP Server Configuration
-
-Environment variables needed (shared across all MCP servers):
-
-| Variable | Description |
-|----------|-------------|
-| `DRUPAL_JWT_PUBLIC_KEY` | PEM-encoded public key for JWT validation |
-| `DRUPAL_SERVICE_ACCOUNT_KEY` | API key for `mcp_service` user |
-| `DRUPAL_BASE_URL` | Base URL for Drupal JSON:API calls |
-| `JWT_AUDIENCE` | Expected audience claim (e.g., `mcp://actions`) |
-| `JWT_ISSUER` | Expected issuer claim (e.g., `https://support.access-ci.org`) |
+**Deliverable**: Researchers using ACCESS MCP
 
 ---
 
-## Open Questions
+## Client Connection Guide
 
-### Technical
+### Claude (claude.ai / Desktop / Mobile)
 
-1. **Key rotation**: What's the process for rotating JWT signing keys?
-2. **Token refresh**: Should tokens be refreshable, or require page reload?
-3. **Audience granularity**: One audience for all MCP actions, or per-domain (e.g., `mcp://announcements`, `mcp://events`)?
+1. Settings → Connectors → Add custom connector
+2. Enter: `https://mcp.access-ci.org/mcp`
+3. Click Connect
+4. Authenticate via CILogon (select your institution)
+5. Tools now available in Claude
 
-### Operational
+### ChatGPT
 
-4. **Key distribution**: How do MCP servers get the public key? Manual config, or fetch from Drupal endpoint?
-5. **Monitoring**: What alerts for auth failures?
+1. Settings → Connections → Add MCP Server
+2. Enter: `https://mcp.access-ci.org/mcp`
+3. Complete CILogon authentication
+4. Tools available in ChatGPT
+
+### VS Code / Cursor
+
+Add to `.vscode/mcp.json`:
+
+```json
+{
+  "servers": {
+    "access-ci": {
+      "url": "https://mcp.access-ci.org/mcp",
+      "type": "http"
+    }
+  }
+}
+```
+
+Authenticate when prompted.
 
 ---
 
-## Glossary
+## Configuration Summary
 
-| Term | Definition |
-|------|------------|
-| **JWT** | JSON Web Token - signed token containing user claims |
-| **ACCESS ID** | User's identifier in ACCESS system (e.g., `user@access-ci.org`) |
-| **Service Key** | API key that identifies a trusted service (MCP server) |
-| **Acting User** | The user on whose behalf an action is performed |
-| **MCP** | Model Context Protocol - standard for AI tool interactions |
+### MCP Server
+
+| Setting | Value |
+|---------|-------|
+| MCP Endpoint | `https://mcp.access-ci.org/mcp` |
+| OAuth Metadata | `/.well-known/oauth-authorization-server` |
+| Authorization | `/oauth/authorize` |
+| Token | `/oauth/token` |
+| Callback | `/oauth/callback` |
+
+### CILogon Client
+
+| Setting | Value |
+|---------|-------|
+| Callback URL | `https://mcp.access-ci.org/oauth/callback` |
+| Scopes | `openid profile email org.cilogon.userinfo` |
+| Client Type | Confidential |
+
+### Backend Integration
+
+| Header | Value |
+|--------|-------|
+| `Authorization` | `Bearer {service_token}` |
+| `X-Acting-User` | User's ACCESS ID |
+| `X-Request-ID` | UUID for tracing |
+
+See [Backend Integration Spec](./07-backend-integration-spec.md) for full contract.
 
 ---
 
 ## References
 
-- [MCP Authorization Specification](https://modelcontextprotocol.io/specification/2025-06-18/basic/authorization)
-- [RFC 7519 - JSON Web Token](https://tools.ietf.org/html/rfc7519)
-- [Drupal Key Module](https://www.drupal.org/project/key)
-- [Firebase JWT PHP Library](https://github.com/firebase/php-jwt)
+- [MCP Authorization Specification (2025-06-18)](https://modelcontextprotocol.io/specification/2025-06-18/basic/authorization)
+- [MCP Transport Specification (2025-03-26)](https://modelcontextprotocol.io/specification/2025-03-26/basic/transports)
+- [Cloudflare MCP Authorization](https://developers.cloudflare.com/agents/model-context-protocol/authorization/)
+- [CILogon OIDC Documentation](https://www.cilogon.org/oidc)
+- [RFC 6749 - OAuth 2.0](https://tools.ietf.org/html/rfc6749)
+- [RFC 7636 - PKCE](https://tools.ietf.org/html/rfc7636)
+- [RFC 9728 - Protected Resource Metadata](https://www.rfc-editor.org/rfc/rfc9728)
+- [Claude Custom Connectors](https://support.claude.com/en/articles/11175166-getting-started-with-custom-connectors-using-remote-mcp)
