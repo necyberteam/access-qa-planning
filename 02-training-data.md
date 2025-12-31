@@ -285,7 +285,7 @@ For each extraction:
 | Scheduled | Quarterly | Catch gradual drift |
 | Manual | On major release | New resources, policy changes |
 
-→ *Details on human review: [04-review-system.md](./04-review-system.md)*
+> *Details on human review: [03-review-system.md](./03-review-system.md)*
 
 ---
 

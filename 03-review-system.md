@@ -2,7 +2,7 @@
 
 > **Part of the Data Pipeline**: [Training Data](./02-training-data.md) → This doc → [Model Training](./04-model-training.md)
 >
-> **Related**: [Agent Architecture](./01-agent-architecture.md)
+> **Related**: [Agent Architecture](./01-agent-architecture.md) | [Observability](./08-observability.md)
 
 ## Overview
 
@@ -10,6 +10,8 @@ Web application for reviewing Q&A data at two critical points:
 
 1. **Pre-Training Review**: Approve Q&A pairs before they go into training data
 2. **Post-Deployment Feedback**: Capture user feedback on model outputs, flag bad answers for correction
+
+Built on [Argilla](https://argilla.io), an open-source data annotation platform for LLM feedback and training data curation, with a thin integration layer for ACCESS-specific features.
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
@@ -21,259 +23,407 @@ Web application for reviewing Q&A data at two critical points:
 │                                                                             │
 │  MCP Extraction ──┐                        User asks question               │
 │                   │                               │                         │
-│  User Q&A DB ─────┼──▶ Review UI ──▶ Approved    │                         │
-│                   │    (approve/   Training  ──▶ Model ──▶ Response         │
-│  Documentation ───┘    reject)     Data          │                         │
+│  User Q&A DB ─────┼──▶ Argilla ──▶ Approved     │                         │
+│                   │    Review     Training  ──▶ Model ──▶ Response         │
+│  Documentation ───┘    UI         Data          │                         │
 │                                                  ▼                         │
 │                                           User feedback                     │
 │                                           (thumbs up/down)                  │
 │                                                  │                         │
 │                                                  ▼                         │
-│                                           Review UI ◀──── Flag bad answers │
+│                                           Argilla ◀──── Flag bad answers   │
 │                                           (correct & retrain)              │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Why Argilla
+
+| Factor | Benefit |
+|--------|---------|
+| **Production-ready UI** | Annotation interface with 80%+ of our requirements built-in |
+| **Duplicate detection** | Built-in semantic search with vector embeddings |
+| **Dataset versioning** | Track changes, export in multiple formats |
+| **Self-hostable** | Docker deployment on existing infrastructure |
+| **Active community** | Open-source with good documentation |
+
+### What We Build (Integration Layer)
+
+Argilla doesn't provide everything we need. A thin Node.js integration service handles:
+
+| Responsibility | Description |
+|----------------|-------------|
+| **CILogon Authentication** | OAuth flow with ACCESS IdP, maps users to Argilla |
+| **Notifications** | Slack/email alerts for pending reviews |
+| **Data Ingestion** | API to receive Q&A pairs from extraction pipeline |
+| **Export** | Format approved records for training pipeline |
+
+---
+
+## Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                              DEPLOYMENT                                      │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│   Digital Ocean Droplet (existing)                                          │
+│   ┌─────────────────────────────────────────────────────────────────────┐   │
+│   │                                                                     │   │
+│   │   ┌─────────────┐    ┌─────────────┐    ┌─────────────┐            │   │
+│   │   │   Argilla   │    │  Elastic-   │    │   Redis     │            │   │
+│   │   │   Server    │◀──▶│  search     │    │  (vectors)  │            │   │
+│   │   │   :6900     │    │   :9200     │    │   :6379     │            │   │
+│   │   └──────┬──────┘    └─────────────┘    └─────────────┘            │   │
+│   │          │                                                          │   │
+│   │          │ API                                                      │   │
+│   │          ▼                                                          │   │
+│   │   ┌─────────────┐                                                   │   │
+│   │   │ Integration │    ┌─────────────┐                                │   │
+│   │   │   Service   │◀──▶│ PostgreSQL  │  (user mappings, preferences) │   │
+│   │   │   :3010     │    │   :5432     │                                │   │
+│   │   └──────┬──────┘    └─────────────┘                                │   │
+│   │          │                                                          │   │
+│   └──────────┼──────────────────────────────────────────────────────────┘   │
+│              │                                                              │
+│              ▼                                                              │
+│   ┌─────────────────┐                                                       │
+│   │  Nginx Proxy    │◀─── CILogon OAuth (via integration service)           │
+│   │  review.access  │                                                       │
+│   └─────────────────┘                                                       │
 │                                                                             │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## User Roles
+## Datasets
 
-| Role | Permissions | Use Case |
-|------|-------------|----------|
-| **Reviewer** | View, Approve, Reject, Edit own domain | Domain experts review their area |
-| **Admin** | All permissions + user management | Oversee entire pipeline |
-| **Viewer** | Read-only access to approved data | Stakeholders checking progress |
+### Pre-Training Review Dataset
+
+For reviewing Q&A pairs generated from MCP extractions, documentation, and other sources before they enter training data.
+
+**Fields:**
+
+| Field | Description |
+|-------|-------------|
+| question | The generated question |
+| answer | The generated answer (markdown) |
+| source_type | Origin: `mcp_extraction`, `user_qa`, `doc_generated` |
+| domain | MCP server/category: `compute-resources`, `allocations`, `software`, etc. |
+| source_data | Raw data preview the Q&A was derived from |
+| citations | Citation markers (`<<SRC:...>>`) |
+
+**Review Actions:**
+
+| Action | Type | Description |
+|--------|------|-------------|
+| Review Decision | Label | approved, rejected, needs_edit, flagged |
+| Rejection Reason | Label | duplicate, incorrect, vague, incomplete, citation_issue, other |
+| Rejection Notes | Text | Free text explanation (if rejected) |
+| Edited Question | Text | Modified question (if needs changes) |
+| Edited Answer | Text | Modified answer (if needs changes) |
+| Quality Rating | Rating | 1-5 scale |
+
+**Filters:**
+- Domain (routes to appropriate reviewers)
+- Source type
+- Complexity level
+
+**Duplicate Detection:**
+- Question embeddings with ~0.85 similarity threshold
+- Flagged duplicates shown side-by-side for resolution
 
 ---
 
-## Core Features
+### Post-Deployment Feedback Dataset
 
-### 1. Review Queue Dashboard
+For reviewing production responses that received negative user feedback.
 
-- Pending counts by domain (compute-resources, software-discovery, allocations, etc.)
-- Recent activity feed (extractions, approvals, imports)
-- Training data status (total approved, pending, delta since last training)
-- Quick actions: Trigger retraining, Export data, View statistics
+**Fields:**
 
-### 2. Review Interface
+| Field | Description |
+|-------|-------------|
+| question | Original user question |
+| response | Model's response that received feedback |
+| conversation_context | Prior conversation turns (if multi-turn) |
+| feedback_type | `thumbs_down`, `flagged`, `drift` |
+| question_id | Links back to production logs / Grafana traces |
+| session_id | Session for context |
+| tools_used | List of MCP tools called to generate the response |
 
-For each Q&A pair:
-- **Source info**: Where it came from (MCP extraction, user Q&A, doc-generated)
-- **Question**: Editable
-- **Answer**: Editable, with markdown preview
-- **Citation**: Verify `<<SRC:...>>` markers are correct
-- **Source data viewer**: See the raw data the Q&A was derived from
-- **Similar Q&A detection**: Alert if duplicates exist with similarity scores
+**Review Actions:**
 
-Actions:
-- Approve
-- Reject (with reason: duplicate, incorrect, vague, incomplete, citation issue)
-- Flag for discussion
-- Skip
+| Action | Type | Description |
+|--------|------|-------------|
+| Review Action | Label | correct_answer, acceptable, add_to_training, dismiss |
+| Corrected Answer | Text | The correct answer (if correcting) |
+| Notes | Text | Reviewer notes |
 
-### 3. Duplicate Handling
+**Filters:**
+- Feedback type
+- Tools used (routes to domain reviewers)
 
-When similar questions detected:
-- Side-by-side comparison view
-- Decision options: Keep current, Keep existing, Merge, Keep both
-- Similarity threshold: ~0.85 for flagging
+---
 
-### 4. Source Data Viewer
+## User Roles & Workspaces
 
-For MCP-extracted Q&A:
-- Show raw API data the Q&A was generated from
-- Highlight changes since last extraction
-- Link to all Q&A pairs using this source
-- Option to regenerate Q&A for changed fields
+### Workspace Structure
 
-### 5. Post-Deployment Feedback Queue
+Workspaces align with MCP servers/backend systems. Each team reviews Q&A related to their domain.
 
-Captures feedback from production:
+```
+Argilla Workspaces
+├── qa-review (Pre-training review)
+│   ├── announcements (Support team)
+│   ├── compute-resources (Operations team)
+│   ├── allocations (Allocations team)
+│   ├── events (Support team)
+│   ├── software (Support team)
+│   └── ... (one per MCP server)
+│
+└── feedback-review (Post-deployment)
+    ├── announcements
+    ├── compute-resources
+    ├── allocations
+    └── ... (mirrors qa-review structure)
+```
 
-**Feedback Tracking**:
+### Reviewer Assignment
 
-Each response gets a unique `question_id` that links:
-- The original query and conversation context
-- The response generated
-- User feedback (if provided)
-- Session information for multi-turn analysis
+| Review Type | Assignment Logic |
+|-------------|------------------|
+| **Pre-training Q&A** | Based on `source_domain` - the MCP server the Q&A was extracted from |
+| **Production feedback** | Based on `tools_used` - all teams whose tools were called can review |
 
-This enables tracing feedback back to specific model outputs for targeted improvement.
+For multi-tool queries (e.g., question that called both `compute-resources` and `allocations`), the feedback appears in both workspaces. Either team can review, or admins can coordinate.
 
-**Explicit User Feedback**:
-- Thumbs up/down from QA Bot interface (linked to `question_id`)
-- Negative feedback automatically queued for review
-- Positive feedback used to reinforce good patterns
+### Role Mapping
 
-**Implicit Feedback Signals**:
-- Follow-up questions (may indicate incomplete answer)
-- Session abandonment after response (possible dissatisfaction)
-- Copy/paste of response content (positive signal)
-- Time spent reading response (engagement metric)
-- Re-asking similar question (possible confusion)
+| ACCESS Role | Argilla Role | Permissions |
+|-------------|--------------|-------------|
+| Admin | Owner | Full access, all workspaces, user management |
+| Domain Reviewer | Annotator | Submit responses, view assigned domain workspace(s) |
+| Viewer | Annotator (read-only) | View records, no submissions |
 
-These signals are logged for pattern analysis, not individual review.
+### CILogon Integration
 
-**Drift Detection**:
-- Periodic comparison of model answers vs live MCP data
-- Flagged when model gives outdated information
-- Triggers retrain consideration
+1. User visits review site → redirected to CILogon
+2. CILogon authenticates via ACCESS IdP → returns identity (`user@access-ci.org`)
+3. Integration service maps ACCESS ID to Argilla user (creates if new)
+4. Integration service assigns user to appropriate workspace(s) based on role config
+5. User gets Argilla session, proxied through integration service
 
-**Review Actions for Flagged Responses**:
-- Correct the answer → add to training data
-- Mark as acceptable → dismiss flag
-- Identify pattern → create new training examples
+---
+
+## Data Flows
+
+### Ingestion: Extraction → Argilla
+
+1. Extraction pipeline generates Q&A pairs
+2. Integration service receives pairs via API
+3. For each pair:
+   - Generate question embedding
+   - Check for duplicates (vector similarity search)
+   - If duplicate found, flag in metadata
+   - Push record to qa-review dataset
+4. Records appear in Argilla UI for review
+
+### Ingestion: Production Feedback → Argilla
+
+1. User gives thumbs-down in qa-bot-core
+2. qa-bot-core calls integration service API
+3. Integration service creates record in feedback-review dataset
+4. Record appears in Argilla UI for review
+5. Positive feedback logged to Grafana only (not queued for human review)
+
+### Export: Argilla → Training Pipeline
+
+1. Export triggered (manual or scheduled)
+2. Integration service queries Argilla for approved records
+3. For edited records, use edited version over original
+4. Format as JSONL with metadata
+5. Write to export location for training pipeline
 
 ---
 
 ## Notification System
 
-### Event Types
-
 | Event | Recipients | Channel | Priority |
 |-------|------------|---------|----------|
 | New items pending review | Domain reviewers | Email + Slack | Normal |
-| Review threshold reached (>N pending for >3 days) | Assigned reviewers | Slack | Normal |
+| Review threshold reached (>N pending for >3 days) | Assigned reviewers | Slack @mention | Normal |
 | Extraction failed | Admins | Email + Slack | High |
 | Retrain threshold reached | Admins | Email + Slack | High |
 | Weekly summary | All users | Email | Low |
 
 ### User Preferences
 
-Per user:
+Stored in integration service database:
 - Email notification frequency (immediate / daily digest)
-- Slack @mentions
+- Slack @mentions enabled
 - Which domains they review
 
 ---
 
-## Tech Stack
+## Custom Features
 
-### Frontend
-- **Framework**: Nuxt 3 (Vue.js)
-- **UI Library**: Nuxt UI Pro (dashboard layouts, tables, forms)
-- **Header/Footer**: access-ci-ui web components
-- **Markdown**: For answer preview
+These require implementation in the integration service (not provided by Argilla):
 
-### Backend
-- **Framework**: Nuxt 3 server routes (`/server/api/`)
-- **Database**: PostgreSQL
-- **ORM**: Prisma or Drizzle
-- **Queue**: Redis + BullMQ for background jobs (extractions, notifications)
+### Drift Detection
 
-### Authentication
+- Periodic job compares recent model responses against current MCP data
+- If model answer contradicts current data, record added to feedback-review with `drift` type
+- Flagged when model gives outdated information
+- Triggers retrain consideration
+- Frequency: Weekly or on-demand
 
-**CILogon + ACCESS IdP**
+### Implicit Feedback Tracking
 
-```
-User → CILogon → ACCESS IdP → OAuth tokens → Nuxt session
-```
+Signals logged for pattern analysis (not individual review):
 
-Configuration:
-- Force ACCESS IdP selection via `idp_hint`
-- User info from CILogon: sub, name, email, idp, affiliation
+| Signal | Interpretation |
+|--------|----------------|
+| Follow-up questions | May indicate incomplete answer |
+| Session abandonment after response | Possible dissatisfaction |
+| Copy/paste of response content | Positive signal |
+| Time spent reading response | Engagement metric |
+| Re-asking similar question | Possible confusion |
 
-### Notifications
-- **Slack**: @slack/web-api for bot messages
-- **Email**: Mailgun via nodemailer-mailgun-transport
-- **In-app**: Server-Sent Events or WebSocket
+These are logged to Grafana for aggregate analysis. Only surfaced to Argilla review if systematic issues detected.
 
----
+### Source Data Change Alerts
 
-## Data Model
+- Track hashes of source data from extractions
+- When source changes, notify reviewers that derived Q&A pairs may need review
+- Highlight changes since last extraction
+- Link Q&A pairs to their source entities for traceability
+- Option to regenerate Q&A for changed fields
 
-### Core Tables
+### Review Actions for Flagged Responses
 
-**qa_pairs**
-- id, source (mcp_extraction | user_qa | doc_generated), domain
-- question, answer, citation_ids (JSONB), metadata (JSONB)
-- status (pending | approved | rejected | flagged), complexity
-- created_at, updated_at
+When a production response is flagged (thumbs down, drift, etc.):
 
-**reviews**
-- qa_pair_id, reviewer_id, action, rejection_reason
-- previous_content (if edited), notes, created_at
-
-**source_data**
-- id, domain, data (JSONB), extracted_at
-- previous_hash, current_hash, changes (JSONB diff)
-
-**duplicate_clusters**
-- qa_pair_ids (JSONB array), similarity_scores
-- resolved, resolution (kept_first | kept_second | merged | kept_both)
-
-**notifications**
-- user_id, type, title, message, link, read, created_at
-
-**training_runs**
-- version, started_at, completed_at, status
-- qa_pair_count, config (JSONB), metrics (JSONB)
-
-### Key Indexes
-- qa_pairs: status, domain, source
-- notifications: user_id + read
-
----
-
-## API Endpoints
-
-### Q&A Management
-- `GET /api/qa-pairs` - List with filters
-- `GET /api/qa-pairs/:id` - Get single pair
-- `PUT /api/qa-pairs/:id` - Update pair
-- `POST /api/qa-pairs/:id/approve` - Approve
-- `POST /api/qa-pairs/:id/reject` - Reject
-- `POST /api/qa-pairs/:id/flag` - Flag for discussion
-
-### Review Queue
-- `GET /api/review/queue` - Pending items
-- `GET /api/review/queue/:domain` - Pending for domain
-- `GET /api/review/stats` - Statistics
-
-### Training
-- `GET /api/training/status` - Current status
-- `POST /api/training/trigger` - Trigger retraining
-- `GET /api/training/export` - Export training data
+| Action | Result |
+|--------|--------|
+| Correct the answer | Add corrected Q&A pair to training data |
+| Mark as acceptable | Dismiss flag, no training data change |
+| Identify pattern | Create new training examples to address systematic issue |
 
 ---
 
 ## Implementation Phases
 
-### Phase 1: Core Review Interface (MVP)
-- Basic dashboard with pending counts
-- Review interface (approve/reject)
-- Simple edit capability
-- PostgreSQL storage
+### Phase 1: Argilla Setup & Basic Review
 
-### Phase 2: Source Data Integration
-- Source data viewer
-- Change detection display
-- Link Q&A to source entities
+- Deploy Argilla via Docker on existing droplet
+- Configure Elasticsearch and Redis
+- Create qa-review dataset with schema
+- Set up admin users manually
+- Test basic review workflow
 
-### Phase 3: Duplicate Detection
-- Similarity scoring (embeddings)
-- Duplicate cluster view
-- Merge/resolve workflow
+**Deliverable:** Working Argilla instance with manual user management
+
+---
+
+### Phase 2: Data Ingestion Pipeline
+
+- Create integration service scaffold
+- Implement ingestion API endpoint
+- Add embedding generation for duplicate detection
+- Connect extraction pipeline to push to Argilla
+- Test end-to-end: extraction → Argilla → review
+
+**Deliverable:** Extracted Q&A pairs appear in Argilla for review
+
+---
+
+### Phase 3: CILogon Authentication
+
+- Add OAuth routes to integration service
+- Implement CILogon → Argilla user mapping
+- Set up Nginx proxy for auth flow
+- Create workspace/role assignment logic
+- Test login flow end-to-end
+
+**Deliverable:** Reviewers can log in with ACCESS credentials
+
+---
 
 ### Phase 4: Notifications
-- Email notifications (Mailgun)
-- Slack integration
-- In-app notification center
-- User preferences
 
-### Phase 5: Analytics & Admin
-- Review statistics and dashboards
-- Training run management
-- User management
-- Audit log
+- Implement Slack webhook integration
+- Add pending count monitoring
+- Create stale item alerts
+- Add email notifications (optional)
+- Set up weekly summary job
+
+**Deliverable:** Reviewers notified of pending work
+
+---
+
+### Phase 5: Production Feedback Loop
+
+- Create feedback-review dataset
+- Add feedback ingestion endpoint
+- Connect qa-bot-core thumbs down to Argilla
+- Implement drift detection (basic version)
+- Test feedback → review → correction flow
+
+**Deliverable:** User feedback flows into review queue
+
+---
+
+### Phase 6: Export & Training Integration
+
+- Implement export API
+- Create training data format (JSONL)
+- Add export scheduling
+- Connect to training pipeline
+- Document export process
+
+**Deliverable:** Approved data exported for model training
+
+---
+
+## Resource Requirements
+
+### Infrastructure (on existing droplet)
+
+| Component | Memory | Storage | Notes |
+|-----------|--------|---------|-------|
+| Argilla Server | 1GB | 1GB | Python/FastAPI |
+| Elasticsearch | 2GB | 10GB | Vector search, records |
+| Redis | 256MB | 1GB | Caching |
+| Integration Service | 512MB | 1GB | Node.js |
+| PostgreSQL | 512MB | 5GB | Metadata (may already exist) |
+
+**Total additional:** ~4GB RAM, ~18GB storage
+
+### External Services
+
+- Slack webhook (free)
+- Email service (existing Mailgun or similar)
+- Embedding API (OpenAI or local model like all-MiniLM-L6-v2)
 
 ---
 
 ## Open Questions
 
-1. **Initial reviewers**: Who are the first users/domain experts?
-2. **SLA**: Expected review turnaround time?
-3. **Hosting**: Where will this be deployed within ACCESS infrastructure?
+1. **Argilla version**: Use Argilla v1 (stable) or v2 (newer SDK)?
+2. **Embedding model**: OpenAI embeddings vs local model?
+3. **Reviewer onboarding**: Who are the initial reviewers for each domain?
+4. **Export frequency**: On-demand vs scheduled exports?
 
-→ *Next in pipeline: [Model Training](./04-model-training.md)* - What happens with approved data
+---
+
+## References
+
+- [Argilla Documentation](https://docs.argilla.io)
+- [Argilla GitHub](https://github.com/argilla-io/argilla)
+- [Argilla Docker Deployment](https://docs.argilla.io/latest/getting_started/quickstart/)
+- [CILogon Documentation](https://www.cilogon.org/oidc)
+
+---
+
+> *Next in pipeline: [Model Training](./04-model-training.md)* - What happens with approved data

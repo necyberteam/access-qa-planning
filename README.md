@@ -82,11 +82,12 @@ Replace the current RAG LLM with an intelligent agent system:
 |---|----------|---------|--------------|
 | 01 | [agent-architecture.md](./01-agent-architecture.md) | System design + roadmap | Architecture, phases, success metrics, data governance |
 | 02 | [training-data.md](./02-training-data.md) | Data preparation | MCP extraction, Q&A templates, deduplication |
-| 03 | [review-system.md](./03-review-system.md) | Human review | Pre-training approval, post-deployment feedback, Web UI |
+| 03 | [review-system.md](./03-review-system.md) | Human review (Argilla) | Pre-training approval, post-deployment feedback, domain reviewers |
 | 04 | [model-training.md](./04-model-training.md) | Model & infrastructure | GH200 setup, model selection, pilot comparison |
 | 05 | [events-actions.md](./05-events-actions.md) | MCP action tools | Announcements (Phase 1), Events (Phase 2) |
 | 06 | [mcp-authentication.md](./06-mcp-authentication.md) | Authentication architecture | OAuth 2.1, CILogon proxy, token strategy |
 | 07 | [backend-integration-spec.md](./07-backend-integration-spec.md) | Backend API contract | Service tokens, X-Acting-User, authorization patterns |
+| 08 | [observability.md](./08-observability.md) | Distributed tracing & audit | Grafana Cloud, OpenTelemetry, dashboards |
 
 ### Implementation Specs
 
