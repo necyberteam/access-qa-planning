@@ -214,6 +214,7 @@ When choosing between duplicates:
 {
   "id": "qa_00001",
   "source": "mcp_extraction | user_qa | doc_generated",
+  "source_ref": "mcp://compute-resources/resources/delta.ncsa.access-ci.org",
   "domain": "compute:resource_specs",
   "messages": [
     {
@@ -232,6 +233,37 @@ When choosing between duplicates:
   }
 }
 ```
+
+### Source Reference Format
+
+The `source_ref` field provides traceability back to the origin of each Q&A pair:
+
+| Source Type | source_ref Format | Example |
+|-------------|-------------------|---------|
+| MCP extraction | `mcp://{server}/{endpoint}/{entity_id}` | `mcp://compute-resources/resources/delta.ncsa.access-ci.org` |
+| Documentation | URL with anchor | `https://docs.access-ci.org/guides/getting-started.pdf#page=12` |
+| User Q&A | Internal reference | `session:{session_id}/question:{question_id}` |
+
+### Source Versioning
+
+For documentation-based Q&A pairs, track the source version to detect when regeneration is needed:
+
+| Field | Description | Example |
+|-------|-------------|---------|
+| `source_hash` | Content hash of source at extraction time | `sha256:a1b2c3...` |
+| `source_modified` | Last-modified date of source | `2025-01-05T00:00:00Z` |
+
+When the source document is updated:
+1. Compare stored `source_hash` to current document hash
+2. If changed, flag derived Q&A pairs for review
+3. Reviewer decides: keep, regenerate, or delete
+
+For MCP extractions, the entity data itself changes - change detection at extraction time handles this (see Automated Refresh Pipeline below).
+
+This enables:
+- Finding all Q&A pairs derived from a specific source when that source changes
+- Invalidating or re-generating Q&A when source data is updated
+- Auditing training data lineage
 
 ### Directory Structure
 

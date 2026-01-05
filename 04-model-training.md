@@ -230,7 +230,73 @@ When model response shows low confidence:
 
 ---
 
+## Model Versioning
+
+Track model versions and their relationship to training data for rollback and auditing.
+
+### Version Identifier
+
+Format: `access-qa-v{major}.{minor}.{patch}`
+
+| Component | When to Increment |
+|-----------|-------------------|
+| major | Architecture change (MoE → Dense, new base model) |
+| minor | Retrained with significant new data (>10% new pairs) |
+| patch | Minor update, bug fix, configuration change |
+
+### What to Track Per Version
+
+| Field | Description | Example |
+|-------|-------------|---------|
+| `model_version` | Version identifier | `access-qa-v1.2.0` |
+| `base_model` | Foundation model fine-tuned | `meta-llama/Llama-3-8B` |
+| `dataset_version` | Training data snapshot ID | `dataset-2025-01-05-abc123` |
+| `training_config` | LoRA params, learning rate, etc. | (stored as JSON) |
+| `eval_metrics` | Accuracy, citation rate, latency | (stored as JSON) |
+| `created_at` | Training completion timestamp | `2025-01-05T14:30:00Z` |
+| `created_by` | Who triggered training | `automation` or `jsmith` |
+| `status` | Deployment status | `deployed`, `archived`, `failed` |
+
+### Dataset Snapshots
+
+Each training run uses a frozen dataset snapshot:
+
+| Field | Description |
+|-------|-------------|
+| `dataset_version` | Unique ID (hash or timestamp) |
+| `qa_pair_ids` | List of Q&A pair IDs included |
+| `qa_pair_count` | Total pairs in snapshot |
+| `source_breakdown` | Count by source type |
+| `domain_breakdown` | Count by domain |
+| `created_at` | Snapshot creation time |
+
+### Version Registry
+
+Maintain a `model_versions.json` registry:
+
+| Purpose | Use Case |
+|---------|----------|
+| Rollback | If new model quality degrades, redeploy previous version |
+| Audit | Trace which Q&A pairs influenced a specific answer |
+| Comparison | Compare metrics across versions |
+| Debugging | Identify which training data caused a problematic response |
+
+### Linking Model to Responses
+
+Each model response in production includes:
+- `model_version` in response metadata
+- Logged to Grafana for correlation with feedback
+
+When a user reports a bad answer:
+1. Look up `model_version` from response metadata
+2. Find `dataset_version` from registry
+3. Search Q&A pairs that may have influenced the answer
+4. Add corrected pair and queue for next training
+
+---
+
 ## Open Questions
 
 1. **Model serving infrastructure**: vLLM vs TGI?
 2. **Learned classifier**: Train query classifier in Phase 3 or defer?
+3. **Version storage**: Git-based versioning vs database registry?
