@@ -27,23 +27,24 @@ This hardware allows training large models at bf16 precision without quantizatio
 
 ## Model Selection
 
-### Pilot Comparison Strategy
+### Pilot Model
 
-Compare MoE (Mixture of Experts) vs Dense architectures before committing:
+**Starting with Mistral-7B-Instruct-v0.3** for the initial pilot:
 
-| Model | Type | Size | Active Params | VRAM (bf16) | Role |
-|-------|------|------|---------------|-------------|------|
-| **Qwen2-MoE-14B** | MoE | 14B | 2.7B | ~28GB | Pilot - MoE candidate |
-| **Llama 3 8B** | Dense | 8B | 8B | ~16GB | Pilot - Dense candidate |
+| Model | Size | VRAM (bf16) | Rationale |
+|-------|------|-------------|-----------|
+| **Mistral-7B-Instruct-v0.3** | 7B | ~14GB | Well-proven for fine-tuning, strong instruction-following, simple to debug |
 
-### Production Scale-Up
+### Scale-Up Path
 
-After pilot determines winner:
+After validating the workflow with Mistral-7B:
 
-| If Winner | Scale To | VRAM |
-|-----------|----------|------|
-| MoE | Mixtral 8x7B | ~90GB |
-| Dense | Llama 3 70B | ~140GB |
+| Stage | Model | VRAM | When |
+|-------|-------|------|------|
+| 1. Pilot | Mistral-7B | ~14GB | Validate pipeline works |
+| 2. Compare | Llama 3 8B | ~16GB | If quality acceptable, compare |
+| 3. Scale | Llama 3.1 70B | ~140GB | If 8B quality insufficient |
+| 4. Optional | MoE (Mixtral) | ~90GB | Only if latency becomes critical |
 
 ### Architecture Trade-offs
 
@@ -202,31 +203,64 @@ When model response shows low confidence:
 
 ---
 
+## Training Pipeline
+
+### Implementation Repository
+
+The training pipeline is implemented in [access-qa-training](https://github.com/necyberteam/access-qa-training):
+
+```
+access-qa-training/
+├── configs/mistral-7b.yaml     # Training configuration
+├── scripts/
+│   ├── setup_env.sh            # GH200 environment setup
+│   └── sync_data.sh            # Data transfer from extraction
+└── src/access_qa_training/
+    ├── data_loader.py          # JSONL → HF Dataset
+    ├── train.py                # LoRA fine-tuning with SFTTrainer
+    └── evaluate.py             # Golden eval set evaluation
+```
+
+### Data Flow
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│  LOCAL                                 │  GH200                     │
+├────────────────────────────────────────┼────────────────────────────┤
+│  access-qa-extraction/                 │  access-qa-training/       │
+│  └── data/output/*.jsonl ────rsync────▶│  ├── data/raw/*.jsonl      │
+│                                        │  ├── qa-train              │
+│                                        │  └── models/               │
+└────────────────────────────────────────┴────────────────────────────┘
+```
+
+---
+
 ## Pilot Execution Checklist
 
-### Data Preparation
-- [ ] Export "good" Q&A pairs from existing user Q&A database
-- [ ] Run MCP extraction on compute-resources and software-discovery
-- [ ] Generate Q&A pairs from key documentation sections
-- [ ] Write refusal/defer-to-live examples for dynamic queries
-- [ ] Document final counts after extraction
+### Week 1: Environment
+- [ ] Create `access-qa-training` repo
+- [ ] SSH to GH200, run `scripts/setup_env.sh`
+- [ ] Verify PyTorch sees GPU (`torch.cuda.is_available()`)
+- [ ] Test loading Mistral-7B at bf16
 
-### Training
-- [ ] Set up environment on GH200 (Python venv, CUDA 12.6, PyTorch)
-- [ ] Train Qwen2-MoE-14B on pilot dataset
-- [ ] Train Llama 3 8B on same dataset
-- [ ] Track with wandb
+### Week 2: Data
+- [ ] Run extraction on compute-resources (~236 pairs done)
+- [ ] Run extraction on software-discovery
+- [ ] Sync JSONL to GH200 (`scripts/sync_data.sh push`)
+- [ ] Verify data loader works
+- [ ] Create initial golden eval set (20-30 questions)
 
-### Evaluation
-- [ ] Run golden eval set on both models
-- [ ] Compare answer accuracy
-- [ ] Compare citation presence
-- [ ] Compare inference latency
-- [ ] Document architecture decision
+### Week 3: Training
+- [ ] Run first training job (1 epoch, verify completion)
+- [ ] Run full training (3 epochs)
+- [ ] Log to wandb, verify metrics
 
-### Decision
-- [ ] GO/NO-GO on full implementation
-- [ ] If GO: proceed to full training with selected architecture
+### Week 4: Evaluation
+- [ ] Run `qa-eval` on trained model
+- [ ] Compare to base model (before fine-tuning)
+- [ ] Document results
+- [ ] GO/NO-GO decision on expanding pipeline
 
 ---
 

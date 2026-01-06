@@ -125,7 +125,9 @@ For AI agents to take actions on behalf of users:
 
 ## Related Repositories
 
-- [access_mcp](https://github.com/access-ci-org/access_mcp) - MCP servers for ACCESS data
+- [access-mcp](https://github.com/necyberteam/access-mcp) - MCP servers for ACCESS data
+- [access-qa-extraction](https://github.com/necyberteam/access-qa-extraction) - Q&A pair extraction from MCP servers
+- [access-qa-training](https://github.com/necyberteam/access-qa-training) - Fine-tuning pipeline for ACCESS Q&A model
 - n8n workflows - Query routing and orchestration
 - cyberteam_drupal - Drupal integration for events
 
