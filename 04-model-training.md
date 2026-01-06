@@ -14,8 +14,8 @@ Fine-tune a model on ACCESS-CI data to reduce MCP tool call latency while mainta
 
 | Spec | Value |
 |------|-------|
-| **Hostname** | gh1-internal.ccs.uky.edu |
-| **Jump Host** | 128.163.202.89 |
+| **Hostname** | gh1-internal.xxx.xxx.xxx |
+| **Jump Host** | 128.163.xxx.xx |
 | **GPU** | NVIDIA GH200 480GB (Grace Hopper Superchip) |
 | **VRAM** | 98 GB HBM3 |
 | **CUDA** | 12.6 |
