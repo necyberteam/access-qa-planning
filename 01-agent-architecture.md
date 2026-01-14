@@ -1,45 +1,59 @@
 # ACCESS Documentation Agent
 
-> **Related**: [Training Data](./02-training-data.md) | [Review System](./03-review-system.md) | [Model Training](./04-model-training.md) | [Events Actions](./05-events-actions.md)
+> **Related**: [Q&A Data Preparation](./02-qa-data.md) | [Review System](./03-review-system.md) | [Model Training (Deprecated)](./04-model-training.md) | [Events Actions](./05-events-actions.md)
 
 ## Overview
 
 This is an AI-powered question-answering system for [ACCESS](https://access-ci.org) users. ACCESS (Advanced Cyberinfrastructure Coordination Ecosystem: Services & Support) allocates computing resources—supercomputers, cloud platforms, and storage systems—from Resource Providers to researchers across the US.
 
-The agent combines a fine-tuned model with live MCP (Model Context Protocol) data access. This architecture reduces latency for common queries while maintaining real-time accuracy for dynamic data.
+The agent uses a **RAG-primary architecture** with live MCP (Model Context Protocol) data access. Static knowledge comes from verified Q&A pairs retrieved via semantic search, while dynamic data comes from real-time API calls.
 
-### Current State
-- **In Production**: RAG LLM trained on PDFs and documentation (provides citations/links)
+### Architecture Decision
 
-### Target State
+After pilot testing, we pivoted from fine-tuning to RAG:
+- Fine-tuned models didn't reliably retain factual details
+- Worse, they hallucinated additional details around what they did memorize
+- RAG retrieves verified answers directly - no hallucination risk
+- RAG enables instant updates without retraining
+
+### Current State (Production)
+
 An intelligent agent system where:
-- **Query Router**: Classifies queries as static, dynamic, or combined
-- **Fine-Tuned Model**: Handles static queries (baked-in knowledge from MCP data + docs)
+- **Query Classifier**: LLM classifies queries as static, dynamic, or combined
+- **RAG Retrieval**: Handles static queries via semantic search over verified Q&A pairs
 - **Live MCP Calls**: Handles dynamic queries (outages, events, metrics, user-specific data)
+- **Combined Synthesis**: Merges RAG knowledge with tool results for comprehensive answers
 - **Citations Preserved**: Maintain link/source capability users rely on
-- **Feedback Loop**: User feedback flows back to improve training data
-- **Action Tools**: Authenticated operations like event creation (future)
+- **Feedback Loop**: User feedback flows to Argilla for Q&A curation
+- **Action Tools**: Authenticated operations like event creation (Phase 2)
 
 ---
 
-## Why This Architecture?
+## Why RAG-Primary?
 
-### The Problem
+### The Problem with Fine-Tuning
 
-Current RAG-based system:
-- Trained on PDFs and documentation - knowledge goes stale between updates
-- No access to real-time data (outages, events, user allocations)
-- MCP servers exist with live ACCESS data, but aren't integrated
+Initial experiments with fine-tuned models showed:
+- Models didn't reliably retain factual details from training data
+- Worse, they hallucinated additional details around what they did memorize
+- This mixing of real and fabricated information is worse than not knowing
+- Retraining required for any knowledge update (slow iteration)
 
-### The Solution
+### The RAG Solution
 
-Split queries into two paths:
+RAG retrieval from verified Q&A pairs provides:
+- Retrieves verified answers directly - no hallucination risk
+- Instant updates (add Q&A pair → immediately available)
+- Consistent citations (embedded in Q&A pairs)
+- Clear "no match" signal when knowledge is missing
+
+### Query Routing
 
 | Query Type | Example | Handling |
 |------------|---------|----------|
-| **Static** | "What GPUs does Delta have?" | Fine-tuned model (baked-in knowledge) |
-| **Dynamic** | "Is Delta currently down?" | Live MCP call |
-| **Combined** | "What GPU resources are available and working?" | Model + MCP together |
+| **Static** | "What GPUs does Delta have?" | RAG retrieval from Q&A pairs |
+| **Dynamic** | "Is Delta currently down?" | Live MCP tool call |
+| **Combined** | "What GPUs does Delta have and is it running?" | RAG + MCP together |
 
 ---
 
@@ -54,25 +68,25 @@ Split queries into two paths:
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                           QUERY CLASSIFIER                                   │
 │                                                                             │
-│  Determines: STATIC | DYNAMIC | COMBINED                                    │
-│  Based on: keywords, patterns, query structure                              │
+│  LLM determines: STATIC | DYNAMIC | COMBINED                                │
+│  Based on: query intent, data requirements, user context                    │
 └──────────┬──────────────────────┬──────────────────────┬────────────────────┘
            │                      │                      │
            ▼                      ▼                      ▼
 ┌──────────────────┐   ┌──────────────────┐   ┌──────────────────┐
 │     STATIC       │   │    COMBINED      │   │     DYNAMIC      │
 │                  │   │                  │   │                  │
-│  Fine-tuned      │   │  Model + MCP     │   │  MCP only        │
-│  model only      │   │  together        │   │                  │
+│  RAG retrieval   │   │  RAG + MCP       │   │  MCP only        │
+│  from Q&A pairs  │   │  together        │   │                  │
 └────────┬─────────┘   └────────┬─────────┘   └────────┬─────────┘
          │                      │                      │
          └──────────────────────┼──────────────────────┘
                                 │
                                 ▼
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                        CITATION POST-PROCESSOR                               │
+│                           SYNTHESIZE NODE                                    │
 │                                                                             │
-│  Extracts <<SRC:...>> markers → Looks up URLs → Formats links               │
+│  Combines RAG matches + tool results → coherent answer with citations       │
 └─────────────────────────────────┬───────────────────────────────────────────┘
                                   │
                                   ▼
@@ -82,120 +96,118 @@ Split queries into two paths:
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
+### Component Details
+
+```
+┌─────────────────┐
+│  access-agent   │  LangGraph orchestration (Python)
+│                 │  Query classification → routing → synthesis
+└────────┬────────┘
+         │ HTTP
+         ▼
+┌─────────────────┐     ┌─────────────────┐
+│  QA Service     │     │  MCP Servers    │
+│  (FastAPI)      │     │  (TypeScript)   │
+│  pgvector RAG   │     │  10 servers     │
+└────────┬────────┘     └────────┬────────┘
+         │                       │
+         ▼                       ▼
+┌─────────────────┐     ┌─────────────────┐
+│  PostgreSQL     │     │  ACCESS APIs    │
+│  + pgvector     │     │  (live data)    │
+│  + HNSW index   │     │                 │
+└─────────────────┘     └─────────────────┘
+         ▲
+         │ sync
+┌─────────────────┐
+│    Argilla      │  Human review & curation
+└─────────────────┘
+```
+
 ---
 
 ## Data Governance
 
-What can be baked into the model vs. what must stay live:
+What can be served via RAG vs. what must come from live MCP:
 
-| Data Type | Can Train Into Model? | Notes |
-|-----------|----------------------|-------|
-| Public resource specs (hardware, GPUs) | **Yes** | Core training data |
-| Public software modules | **Yes** | Versions change - add freshness disclaimer |
-| Public NSF awards | **Yes** | Public record |
-| General ACCESS documentation | **Yes** | From RAG PDFs |
-| Affinity group info | **Yes** | Stable |
-| **Per-user allocations** | **NO** | Privacy/accuracy - always live |
-| **Project-specific details** | **NO** | Privacy/accuracy - always live |
-| **User SU balances** | **NO** | Must be real-time |
-| System outages/status | **NO** | Real-time critical |
-| Upcoming events | **NO** | Changes frequently |
-| Usage metrics (XDMoD) | **NO** | Time-sensitive |
+| Data Type | Source | Notes |
+|-----------|--------|-------|
+| Public resource specs (hardware, GPUs) | **RAG** | Core Q&A pairs |
+| Public software modules | **RAG** | Versions change - consider freshness |
+| Public NSF awards | **RAG** | Public record |
+| General ACCESS documentation | **RAG** | From curated Q&A |
+| Affinity group info | **RAG** | Stable |
+| **Per-user allocations** | **MCP** | Privacy/accuracy - always live |
+| **Project-specific details** | **MCP** | Privacy/accuracy - always live |
+| **User SU balances** | **MCP** | Must be real-time |
+| System outages/status | **MCP** | Real-time critical |
+| Upcoming events | **MCP** | Changes frequently |
+| Usage metrics (XDMoD) | **MCP** | Time-sensitive |
 
-**Policy**: Never bake user-specific, project-specific, or sensitive allocation details into the model.
-
-### Staleness Boundaries
-
-How long can baked-in data be before it needs refresh or disclaimer?
-
-| Data Type | Acceptable Staleness | Action When Exceeded |
-|-----------|---------------------|---------------------|
-| Hardware specs | 90 days | Retrain or add disclaimer |
-| Software versions | 30 days | Add "verify current version" note |
-| Documentation | 60 days | Check for updates |
-| NSF awards | 90 days | Acceptable (public record) |
-| Allocation metadata | 30 days | Retrain |
-
-Model responses should include freshness context when relevant: *"As of [training date], Delta has..."*
+**Policy**: Never store user-specific, project-specific, or sensitive allocation details in the Q&A database.
 
 ---
 
 ## Query Classification
 
-### Stage 1: Rule-Based (Deploy First)
+### LLM-Based Classification
 
-Pattern matching for quick classification:
+The agent uses an LLM to classify queries based on intent:
 
-**Dynamic patterns** (→ live MCP):
+**Static indicators** (→ RAG):
+- Factual: "what is", "describe", "explain", "how does"
+- Specs: "hardware", "specs", "specifications", "capabilities"
+- Documentation: "how do I", "guide", "tutorial"
+
+**Dynamic indicators** (→ MCP tools):
 - Time words: "currently", "right now", "today", "this week"
 - Status words: "outage", "down", "maintenance", "status"
 - User-specific: "my project", "my allocation", "my balance"
 - Events: "upcoming", "next", "scheduled"
 
-**Static patterns** (→ fine-tuned model):
-- Factual: "what is", "describe", "explain", "how does"
-- Specs: "hardware", "specs", "specifications", "capabilities"
-- Documentation: "how do I", "guide", "tutorial"
+**Combined indicators** (→ RAG + MCP):
+- Multiple aspects: "specs AND status", "capabilities AND availability"
+- Comparative with current state: "compare to what's available now"
 
-**Default**: When uncertain, use COMBINED (safe fallback)
+### Similarity Thresholds
 
-### Stage 2: Learned Classifier (Future)
+Different thresholds for different query types:
 
-Train a classifier on production query logs:
-- Input: query text
-- Output: STATIC / DYNAMIC / COMBINED probability
-- Retrain periodically as patterns evolve
-
-### Confidence-Aware Routing
-
-The fine-tuned model may produce low-confidence answers for edge cases or stale data. When this happens, validate against live MCP:
-
-```
-User Query
-    │
-    ▼
-Query Classifier ──▶ STATIC
-    │
-    ▼
-Fine-Tuned Model
-    │
-    ├── High Confidence ──▶ Return response
-    │
-    └── Low Confidence ──▶ Validate with MCP ──▶ Return validated response
-                                │
-                                └── Log for review (possible drift)
-```
-
-**Low confidence indicators:**
-- Hedging language: "I'm not sure", "might be", "possibly"
-- Missing expected citations
-- Token probability below threshold
-- Query about recently updated data (software versions, etc.)
-
-**Benefits:**
-- Catches model drift early
-- Maintains accuracy without always calling MCP
-- Generates training signal for weak areas
+| Query Type | Threshold | Rationale |
+|------------|-----------|-----------|
+| Static | 0.85 | High confidence required for direct answers |
+| Combined | 0.75 | More lenient (tools provide additional context) |
+| Fallback | 0.65 | Last resort before "I don't know" |
 
 ---
 
-## Component Details
+## RAG Retrieval
 
-### Fine-Tuned Model
+### Q&A Service (access-qa-service)
 
-Handles static/semi-static knowledge:
+FastAPI service providing semantic search:
 
-| Data Source | Update Frequency | Examples |
-|-------------|------------------|----------|
-| Compute resource specs | Monthly | GPU counts, memory, node types |
-| Software packages | Weekly | Available modules, versions |
-| Allocation metadata | Weekly | Public project info, fields of science |
-| NSF awards | Weekly | Funding data, PI info |
-| Documentation | On change | How-to guides, policies |
+| Feature | Implementation |
+|---------|----------------|
+| Vector store | PostgreSQL + pgvector |
+| Index | HNSW (15x faster than IVFFlat) |
+| Embeddings | sentence-transformers/all-MiniLM-L6-v2 |
+| Caching | Query-level cache (90%+ hit rate for repeated queries) |
 
-The model outputs `<<SRC:...>>` citation markers that link back to source data.
+### Q&A Pair Format
 
-→ *Details: [Model Training](./04-model-training.md)*
+```json
+{
+  "question": "What GPUs does Delta have?",
+  "answer": "Delta has NVIDIA A100 GPUs with 40GB HBM2 memory. Each GPU node has 4 A100 GPUs. <<SRC:compute-resources:delta.ncsa.access-ci.org>>",
+  "domain": "compute-resources",
+  "entity_id": "delta.ncsa.access-ci.org"
+}
+```
+
+Citations are embedded in answers using `<<SRC:domain:entity_id>>` markers.
+
+→ *Details: [Q&A Data Preparation](./02-qa-data.md)*
 
 ### Live MCP Servers
 
@@ -211,23 +223,39 @@ Handle dynamic data that must be current:
 
 → *Details: [Events Actions](./05-events-actions.md)* for authenticated action patterns
 
-### n8n Orchestrator
+---
 
-Coordinates the workflow:
+## Response Synthesis
 
-1. Receives query from QA Bot
-2. Runs query classifier
-3. Routes to appropriate handler(s)
-4. Combines results if needed
-5. Runs citation post-processor
-6. Returns formatted response
+When queries involve both RAG and MCP data, outputs must be combined coherently.
 
-### QA Bot (Frontend)
+### Synthesis Strategies
 
-- Sends queries to n8n webhook
-- Receives formatted responses with citations
-- Collects user feedback (thumbs up/down)
-- Passes user context for authenticated operations
+| Query Type | Strategy |
+|------------|----------|
+| **Static only** | Return RAG answer directly (with citations) |
+| **Dynamic only** | Return MCP response directly |
+| **Combined** | Merge RAG knowledge + MCP data into unified response |
+
+### Combined Response Pattern
+
+```
+User: "What GPU resources does Delta have and is it currently operational?"
+
+1. RAG provides: GPU specs from verified Q&A (static)
+2. MCP provides: Current system status (dynamic)
+3. Synthesizer combines: "Delta has NVIDIA A100 GPUs with 40GB memory
+   (4 per node). The system is currently operational with no reported
+   outages. [Source: compute-resources/delta.ncsa.access-ci.org]"
+```
+
+### Synthesis Guidelines
+
+- Lead with the primary information source
+- Integrate secondary source naturally
+- Maintain single, coherent voice
+- Preserve citations from RAG matches
+- Include real-time status from tools
 
 ---
 
@@ -245,62 +273,13 @@ Agent: "Compared to Delta's A100s, Expanse has..."
 
 ### Session Management
 
-Each conversation session maintains:
+LangGraph maintains conversation state via PostgreSQL checkpointing:
 
 | Field | Purpose |
 |-------|---------|
-| `session_id` | Unique identifier for the conversation |
-| `conversation_history` | Recent messages (question + answer pairs) |
-| `question_id` | Unique ID per question for feedback tracking |
-
-### Implementation
-
-- QA Bot generates `session_id` on conversation start
-- Each request includes recent history (last N turns, or token-limited)
-- `question_id` links feedback to specific responses
-- Session expires after inactivity timeout
-
-### Context Window Management
-
-The fine-tuned model has limited context. Strategy:
-
-1. Always include current question
-2. Include recent history (configurable, e.g., last 3 turns)
-3. Summarize older context if needed
-4. Prioritize history relevant to current query
-
----
-
-## Response Synthesis
-
-When queries involve both model and MCP data, outputs must be combined coherently.
-
-### Synthesis Strategies
-
-| Query Type | Strategy |
-|------------|----------|
-| **Static only** | Return model response directly |
-| **Dynamic only** | Return MCP response directly |
-| **Combined** | Merge model + MCP into unified response |
-
-### Combined Response Pattern
-
-```
-User: "What GPU resources are available and currently working?"
-
-1. Model provides: GPU specs for each resource (static)
-2. MCP provides: Current system status (dynamic)
-3. Synthesizer combines: "Delta has A100 GPUs (currently operational).
-   Expanse has V100 GPUs (maintenance until 5pm)..."
-```
-
-### Synthesis Guidelines
-
-- Lead with the primary information source
-- Integrate secondary source naturally
-- Maintain single, coherent voice
-- Preserve citations from both sources
-- Flag any contradictions for review
+| `thread_id` | Unique identifier for the conversation |
+| `messages` | Full conversation history |
+| `checkpoint` | State at each step for recovery |
 
 ---
 
@@ -339,13 +318,13 @@ What ACCESS topic can I help you with?"
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                           TRAINING PIPELINE                                  │
+│                           Q&A CURATION PIPELINE                              │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │                                                                             │
 │  MCP Extraction ──┐                                                         │
 │                   │                                                         │
-│  User Q&A DB ─────┼──▶ Review System ──▶ Approved Data ──▶ Model Training   │
-│                   │    (human review)                                       │
+│  User Feedback ───┼──▶ Argilla Review ──▶ Approved Q&A ──▶ QA Service      │
+│                   │    (human review)                      (pgvector)       │
 │  Documentation ───┘                                                         │
 │                                                                             │
 └─────────────────────────────────────────────────────────────────────────────┘
@@ -355,11 +334,11 @@ What ACCESS topic can I help you with?"
 │                          PRODUCTION SYSTEM                                   │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │                                                                             │
-│  User Query ──▶ Query Classifier ──▶ Fine-Tuned Model ──┐                   │
-│                        │                                │                   │
-│                        └──▶ Live MCP Servers ───────────┼──▶ Response       │
-│                                                         │                   │
-│                              Citation Post-Processor ◀──┘                   │
+│  User Query ──▶ Query Classifier ──▶ RAG Service ──────────┐                │
+│                        │                                   │                │
+│                        └──▶ Live MCP Servers ──────────────┼──▶ Response    │
+│                                                            │                │
+│                              Synthesize Node ◀─────────────┘                │
 │                                                                             │
 └─────────────────────────────────────────────────────────────────────────────┘
                                   │
@@ -368,9 +347,9 @@ What ACCESS topic can I help you with?"
 │                           FEEDBACK LOOP                                      │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │                                                                             │
-│  User Feedback (thumbs up/down) ──▶ Review System ──▶ Training Data Update  │
+│  User Feedback (thumbs up/down) ──▶ Argilla ──▶ Q&A Updates                 │
 │                                                                             │
-│  Drift Detection (model vs MCP) ──▶ Retrain Trigger                         │
+│  Low-confidence answers ──▶ Review queue for human verification             │
 │                                                                             │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
@@ -381,188 +360,59 @@ What ACCESS topic can I help you with?"
 
 | Metric | Target | How Measured |
 |--------|--------|--------------|
-| **Answer correctness** | ≥95% vs ground-truth | Human eval on golden set |
-| **MCP call reduction** | 40-60% fewer calls for static queries | API call count per query |
-| **Citation coverage** | ≥90% of answers include valid citation | Automated + spot check |
-| **Static query latency** | P95 < 2s end-to-end | Response time tracking |
-| **Query routing accuracy** | ≥95% static/dynamic classification | Classification metrics |
+| **Answer correctness** | ≥90% vs ground-truth | Human eval on golden set |
+| **RAG retrieval accuracy** | ≥85% precision | Relevance scoring |
+| **Citation coverage** | ≥90% of answers include valid citation | Automated check |
+| **Static query latency** | P95 < 500ms | Response time tracking |
+| **Query routing accuracy** | ≥95% classification | Manual review sample |
 | **User satisfaction** | ≥80% positive feedback | Thumbs up/down in UI |
 
 ---
 
 ## Observability & Logging
 
-Every request through n8n should log structured data for monitoring and analysis.
+Every request through the agent logs structured data for monitoring and analysis.
 
 ### Request Logging
 
 | Field | Purpose |
 |-------|---------|
-| `question_id` | Unique identifier for this Q&A |
-| `session_id` | Conversation session |
+| `thread_id` | Conversation identifier |
 | `query_text` | The user's question |
 | `classification` | STATIC / DYNAMIC / COMBINED |
-| `route_reason` | Why this classification was chosen |
-| `model_used` | Which model handled the query |
+| `rag_matches` | Number and scores of RAG matches |
 | `mcp_tools_called` | List of MCP tools invoked (if any) |
 | `citations_returned` | Count of citations in response |
 | `latency_ms` | End-to-end response time |
-| `confidence_score` | Model confidence (if available) |
 | `timestamp` | When the request was processed |
 
 ### Uses
 
 - **Debugging**: Trace issues to specific requests
 - **Performance monitoring**: Track latency, identify bottlenecks
-- **Classifier training**: Gather labeled data for learned classifier
-- **Quality analysis**: Correlate routing decisions with user feedback
+- **Quality analysis**: Correlate RAG scores with user feedback
+- **Q&A gap analysis**: Identify queries with no good RAG match
+
+→ *Details: [Observability](./08-observability.md)*
 
 ---
 
-## Drift Detection
+## Implementation Status
 
-The fine-tuned model's knowledge becomes stale over time. Detect when this happens.
+| Phase | Status | Description |
+|-------|--------|-------------|
+| Phase 0: Baseline | ✅ Complete | Golden eval set, current system analysis |
+| Phase 1: Data Pipeline | ✅ Complete | MCP extraction, Argilla review system |
+| Phase 2: Model Training | ⚠️ Deprecated | Fine-tuning abandoned for RAG |
+| Phase 3: RAG Service | ✅ Complete | access-qa-service with pgvector |
+| Phase 4: Agent Integration | ✅ Complete | LangGraph agent with RAG + MCP |
+| Phase 5: Production | ✅ Complete | Deployed and monitoring |
 
-### Detection Method
+### Current Focus
 
-Periodically sample production queries and compare:
-
-```
-1. Select sample of STATIC queries (e.g., 1% of traffic)
-2. Get model's answer
-3. Get fresh answer from live MCP
-4. Compare for significant differences
-5. Log drift events when they diverge
-```
-
-### Drift Indicators
-
-| Signal | Action |
-|--------|--------|
-| Model answer differs from MCP | Log for review |
-| Missing/changed resource specs | Flag for retraining |
-| Outdated software versions | Add freshness disclaimer |
-| New resources not in model | Queue immediate update |
-
-### Thresholds
-
-- **Alert threshold**: >5% of sampled queries show drift
-- **Retrain threshold**: >10% drift OR critical information affected
-
-→ *See also: [Training Data - Retraining Triggers](./02-training-data.md#retraining-triggers)*
-
----
-
-## Implementation Phases
-
-```
-┌─────────────────────────────────────────────────────────────────────────────────┐
-│                           IMPLEMENTATION PHASES                                  │
-├─────────────────────────────────────────────────────────────────────────────────┤
-│                                                                                 │
-│  PHASE 0        PHASE 1          PHASE 2          PHASE 3          PHASE 4     │
-│  Baseline &     Data Pipeline    Model Training   Integration      Production   │
-│  Evaluation     + Review UI                       + n8n            & Monitoring │
-│                                                                                 │
-│  ┌─────────┐   ┌──────────┐     ┌──────────┐     ┌──────────┐     ┌─────────┐  │
-│  │ Golden  │   │ Extract  │     │ Train &  │     │ Query    │     │ Deploy  │  │
-│  │ Eval    │ → │ MCP Data │  →  │ Evaluate │  →  │ Router + │  →  │ Monitor │  │
-│  │ Set     │   │ + Review │     │ Model    │     │ MCP Live │     │ Iterate │  │
-│  └─────────┘   └──────────┘     └──────────┘     └──────────┘     └─────────┘  │
-│                                                                                 │
-└─────────────────────────────────────────────────────────────────────────────────┘
-```
-
-### Phase 0: Baseline & Evaluation
-
-**Goal**: Create evaluation framework and understand current system.
-
-- [ ] Document current RAG citation format
-- [ ] Create golden evaluation set (150-200 queries)
-- [ ] Export existing "good" user Q&A pairs
-
-→ *Details: [Training Data](./02-training-data.md)*
-
-### Phase 1: Data Pipeline + Review UI
-
-**Goal**: Set up data extraction and human review system.
-
-- [ ] Build MCP extraction pipeline
-- [ ] Deploy review system web UI
-- [ ] Begin collecting approved Q&A pairs
-
-→ *Details: [Training Data](./02-training-data.md), [Review System](./03-review-system.md)*
-
-### Phase 2: Model Training
-
-**Goal**: Train and evaluate fine-tuned model.
-
-- [ ] Set up GH200 training environment
-- [ ] Run pilot comparing model architectures
-- [ ] Train production model on approved data
-
-→ *Details: [Model Training](./04-model-training.md)*
-
-### Phase 3: Integration
-
-**Goal**: Build query router and connect all components.
-
-- [ ] Implement query classifier in n8n
-- [ ] Connect fine-tuned model to workflow
-- [ ] Add citation post-processor
-- [ ] Add confidence-aware fallback
-
-### Phase 4: Production & Monitoring
-
-**Goal**: Deploy, monitor, and maintain.
-
-- [ ] Run golden eval set through new system
-- [ ] Deploy to staging, then production
-- [ ] Set up drift detection
-- [ ] Establish retraining pipeline
-
----
-
-## Pilot
-
-Before full implementation, validate with minimal data.
-
-### Pilot Goals
-1. Test whether fine-tuning works for ACCESS domain
-2. Compare MoE vs Dense architectures
-3. Validate before building full infrastructure
-
-### Pilot Data
-
-| Source | Notes |
-|--------|-------|
-| Existing user Q&A ("good" labeled) | Real questions from production - highest value |
-| MCP extraction (compute-resources + software-discovery) | Structured data from APIs |
-| Documentation Q&A | LLM-generated from key docs |
-| Negative/refusal examples | Teach model when to defer to live MCP |
-
-Target: enough data to validate fine-tuning approach (exact counts TBD after extraction).
-
-### Pilot Success Criteria
-
-- [ ] Model learns ACCESS-CI domain knowledge
-- [ ] Citations appear in >80% of responses
-- [ ] Refusal behavior triggers for dynamic queries
-- [ ] Inference latency <2s on GH200
-
-### Pilot Baseline Comparison
-
-To validate the approach, compare fine-tuned model against:
-
-| Baseline | What It Tests |
-|----------|---------------|
-| Current RAG system | Is fine-tuning actually better? |
-| Raw base model (no fine-tuning) | How much does domain training help? |
-| LLM + live MCP tools | What's the latency/accuracy tradeoff? |
-
-**LLM + live MCP tools**: Use Claude (or equivalent) with MCP tool calls for every query. This is essentially the current approach - always hitting the APIs. Shows the latency cost we're trying to reduce with baked-in knowledge.
-
-Run golden eval set against all three. Fine-tuned model should beat each baseline on relevant metrics (accuracy for RAG, latency for MCP-only).
+- Expanding Q&A coverage (more domains, more questions)
+- Improving synthesis quality for combined queries
+- Authenticated actions (Phase 2 - events creation)
 
 ---
 
@@ -570,56 +420,49 @@ Run golden eval set against all three. Fine-tuned model should beat each baselin
 
 | Risk | Mitigation |
 |------|------------|
-| Model quality insufficient | Pilot compares architectures; iterate on data |
-| GH200 memory tight | Start with smaller model, batch_size=1 |
-| Citation accuracy problems | Tokenization checks; post-processor validation |
-| Query classifier mistakes | Default to COMBINED (safe); confidence fallback |
-| Model gives stale answers | Drift monitoring; freshness disclaimers |
-| Privacy concerns | Data governance matrix; never bake user-specific data |
+| RAG retrieval misses | Low-confidence answers flagged for review |
+| Q&A pairs go stale | Regular sync from MCP servers + Argilla review |
+| Query classifier mistakes | Default to COMBINED (safe fallback) |
+| Citation accuracy | Citations embedded in Q&A pairs, validated on sync |
+| Privacy concerns | Never store user-specific data in Q&A database |
 
 ### Fallback Hierarchy
 
 When components fail, degrade gracefully:
 
 ```
-1. Fine-tuned model + MCP (optimal)
+1. RAG + MCP (optimal)
         │
-        ▼ (model unavailable)
-2. Live MCP only (slower, but accurate)
+        ▼ (RAG unavailable)
+2. Live MCP only (no static knowledge, but accurate)
         │
         ▼ (MCP unavailable)
-3. Cached MCP responses (stale but functional)
+3. RAG only with disclaimer ("real-time data unavailable")
         │
-        ▼ (cache miss)
+        ▼ (both unavailable)
 4. Base LLM with disclaimer ("I don't have current ACCESS data")
 ```
-
-Each level maintains citation capability where possible.
-
----
-
-## Open Questions
-
-### Technical
-1. Model serving infrastructure: vLLM vs TGI?
-2. Learned classifier: Phase 3 or defer?
-3. Query classifier accuracy target: 95%? 99%?
-
-### Policy
-4. Who approves pushing new model to production?
 
 ---
 
 ## Authenticated Actions
 
-The architecture supports authenticated operations, enabling users to create content conversationally:
+The architecture supports authenticated operations, enabling users to create content conversationally.
 
-```
-User (logged in) ──▶ QA Bot ──▶ n8n ──▶ MCP Server ──▶ Drupal API
-                        │                    │
-                        │                    ├── Validates user JWT
-                        └── JWT token        └── Calls Drupal with service key + acting user
-```
+### Why CILogon
+
+ACCESS already uses CILogon for authentication across its infrastructure. Using CILogon for agent authentication:
+- Consistent with existing ACCESS identity management
+- Supports 4000+ institutions via federated auth
+- Users authenticate with their existing institutional credentials
+
+### Authentication Pattern
+
+| Component | Role |
+|-----------|------|
+| User | Authenticates via CILogon (institutional login) |
+| MCP Server | Receives user identity, calls backend APIs |
+| Backend | Service token auth + `X-Acting-User` header for attribution |
 
 ### Implementation Status
 
@@ -630,15 +473,18 @@ User (logged in) ──▶ QA Bot ──▶ n8n ──▶ MCP Server ──▶ D
 
 ### Key Design Decisions
 
-- **Single service key**: One `mcp_service_key` shared by all MCP servers
-- **User attribution**: `X-Acting-User` header identifies who performed action
-- **Draft-first**: All API-created content starts unpublished
-- **Shared auth module**: `access_mcp_auth` provides reusable authentication service
+| Decision | Rationale |
+|----------|-----------|
+| Service token pattern | MCP servers use shared credentials for backend calls |
+| User attribution | `X-Acting-User` header identifies who performed action |
+| Draft-first | All API-created content starts unpublished |
+| CILogon | Consistent with existing ACCESS authentication |
 
 ### Documentation
 
 | Document | Purpose |
 |----------|---------|
 | [MCP Action Tools](./05-events-actions.md) | Overview of action tools initiative |
-| [MCP Authentication](./06-mcp-authentication.md) | Authentication architecture details |
+| [MCP Authentication](./06-mcp-authentication.md) | OAuth 2.1 architecture with CILogon |
+| [Backend Integration Spec](./07-backend-integration-spec.md) | Service token + X-Acting-User contract |
 | [Announcements API Spec](./drupal-announcements-api-spec.md) | Drupal developer spec for Phase 1 |

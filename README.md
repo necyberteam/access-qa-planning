@@ -1,6 +1,6 @@
 # ACCESS QA System Planning
 
-> **Version**: 0.1.0 (Planning)
+> **Version**: 0.2.0 (RAG-Primary Architecture)
 
 Planning documentation for the ACCESS-CI intelligent documentation agent.
 
@@ -17,23 +17,9 @@ This tool answers those questions accurately, with citations to source data.
 
 ## Executive Summary
 
-**Current State**: A RAG-based QA system trained on PDFs and documentation. It answers questions but can become stale and lacks access to live system data.
+The ACCESS QA system is an intelligent agent that answers researcher questions about computing resources, allocations, and system status. It classifies each query and routes it to the appropriate handler: factual questions about resource specs and documentation are answered from a database of human-verified Q&A pairs, while questions about real-time data like outages or user allocations are answered via live API calls to MCP servers. All responses include citations linking back to source data.
 
-**Problem**:
-- Static knowledge goes stale between retraining
-- No access to real-time data (outages, current events, user allocations)
-- MCP servers exist but aren't integrated into the QA system
-
-**Solution**: An intelligent agent that routes queries to the optimal handler:
-- Static questions (hardware specs, documentation) → fine-tuned model with baked-in knowledge
-- Dynamic questions (outages, user allocations) → live MCP API calls
-- Combined questions → both working together
-
-**Key Benefits**:
-- Fresh answers for dynamic data via MCP integration
-- Faster responses for static questions via fine-tuned model
-- Maintained citation capability
-- Human review ensures quality before and after training
+The system is built on three main components: the access-agent (LangGraph) handles query classification and response synthesis, access-qa-service provides RAG retrieval from curated Q&A pairs stored in PostgreSQL with pgvector, and 10 MCP servers provide real-time access to ACCESS APIs. Human reviewers curate Q&A pairs through Argilla before they enter the system. Future phases will add authenticated actions, allowing users to create announcements and events conversationally.
 
 ## User Journey
 
@@ -46,16 +32,16 @@ This tool answers those questions accurately, with citations to source data.
                  │                    │                    │
                  ▼                    ▼                    ▼
       ┌──────────────────┐ ┌──────────────────┐ ┌──────────────────┐
-      │ "What GPUs does  │ │ "What GPU        │ │ "Is Delta down?" │
-      │  Delta have?"    │ │  resources are   │ │                  │
-      │                  │ │  available now?" │ │  DYNAMIC         │
+      │ "What GPUs does  │ │ "What GPUs does  │ │ "Is Delta down?" │
+      │  Delta have?"    │ │  Delta have and  │ │                  │
+      │                  │ │  is it running?" │ │  DYNAMIC         │
       │  STATIC          │ │  COMBINED        │ │                  │
       └────────┬─────────┘ └────────┬─────────┘ └────────┬─────────┘
                │                    │                    │
                ▼                    ▼                    ▼
       ┌──────────────────┐ ┌──────────────────┐ ┌──────────────────┐
-      │ Fine-tuned model │ │ Model + live MCP │ │ Live MCP call    │
-      │ (fast, cached)   │ │ (comprehensive)  │ │ (real-time)      │
+      │ RAG retrieval    │ │ RAG + live MCP   │ │ Live MCP call    │
+      │ (verified Q&A)   │ │ (comprehensive)  │ │ (real-time)      │
       └────────┬─────────┘ └────────┬─────────┘ └────────┬─────────┘
                │                    │                    │
                └────────────────────┼────────────────────┘
@@ -67,23 +53,42 @@ This tool answers those questions accurately, with citations to source data.
       └─────────────────────────────────────────────────────────────┘
 ```
 
-## Goal
+## System Architecture
 
-Replace the current RAG LLM with an intelligent agent system:
-- **Query Classification**: Route queries to the right handler (static vs dynamic)
-- **Fine-Tuned Model**: Handles static queries (baked-in knowledge from MCP data + docs)
-- **Live MCP Calls**: Handles dynamic queries (outages, events, metrics, user-specific data)
-- **Citations Preserved**: Maintain source links users rely on
-- **Action Tools**: Future authenticated operations (create events, etc.)
+```
+┌─────────────────┐
+│  access-agent   │  LangGraph orchestration
+│  (Python)       │  Query classification → routing → synthesis
+└────────┬────────┘
+         │ HTTP
+         ▼
+┌─────────────────┐     ┌─────────────────┐
+│  QA Service     │     │  MCP Servers    │
+│  (FastAPI)      │     │  (TypeScript)   │
+│  pgvector RAG   │     │  10 servers     │
+└────────┬────────┘     └────────┬────────┘
+         │                       │
+         ▼                       ▼
+┌─────────────────┐     ┌─────────────────┐
+│  PostgreSQL     │     │  ACCESS APIs    │
+│  + pgvector     │     │  (live data)    │
+└─────────────────┘     └─────────────────┘
+         ▲
+         │ sync
+┌─────────────────┐
+│    Argilla      │  Human review
+│  (Q&A curation) │
+└─────────────────┘
+```
 
 ## Documents
 
 | # | Document | Purpose | Key Sections |
 |---|----------|---------|--------------|
 | 01 | [agent-architecture.md](./01-agent-architecture.md) | System design + roadmap | Architecture, phases, success metrics, data governance |
-| 02 | [training-data.md](./02-training-data.md) | Data preparation | MCP extraction, Q&A templates, deduplication |
-| 03 | [review-system.md](./03-review-system.md) | Human review (Argilla) | Pre-training approval, post-deployment feedback, domain reviewers |
-| 04 | [model-training.md](./04-model-training.md) | Model & infrastructure | GH200 setup, model selection, pilot comparison |
+| 02 | [02-qa-data.md](./02-qa-data.md) | Q&A data preparation | MCP extraction, Q&A templates, deduplication |
+| 03 | [review-system.md](./03-review-system.md) | Human review (Argilla) | Pre-deployment approval, post-deployment feedback, domain reviewers |
+| 04 | [model-training.md](./04-model-training.md) | Model training (deprecated) | Historical reference for fine-tuning approach |
 | 05 | [events-actions.md](./05-events-actions.md) | MCP action tools | Announcements (Phase 1), Events (Phase 2) |
 | 06 | [mcp-authentication.md](./06-mcp-authentication.md) | Authentication architecture | OAuth 2.1, CILogon proxy, token strategy |
 | 07 | [backend-integration-spec.md](./07-backend-integration-spec.md) | Backend API contract | Service tokens, X-Acting-User, authorization patterns |
@@ -100,11 +105,11 @@ Replace the current RAG LLM with an intelligent agent system:
 ### Executive Overview
 Start with [01-agent-architecture.md](./01-agent-architecture.md) - covers the full system design and implementation phases.
 
-### Data Pipeline (extraction → review → training)
+### Data Pipeline (extraction → review → RAG)
 The data pipeline docs describe a continuous flow:
-1. [02-training-data.md](./02-training-data.md) - Sources, extraction, Q&A generation
-2. [03-review-system.md](./03-review-system.md) - Human review (before training + after deployment)
-3. [04-model-training.md](./04-model-training.md) - Training the fine-tuned model
+1. [02-qa-data.md](./02-qa-data.md) - Sources, extraction, Q&A generation
+2. [03-review-system.md](./03-review-system.md) - Human review via Argilla
+3. Q&A pairs sync to access-qa-service for RAG retrieval
 
 ### Action Tools (MCP Write Operations)
 
@@ -116,20 +121,30 @@ For AI agents to take actions on behalf of users:
 
 ## Current Status
 
-- **Phase**: Planning / Pilot Preparation
+- **Phase**: Production / Continuous Improvement
+- **Completed**:
+  - RAG-primary architecture implemented and deployed
+  - access-qa-service running with pgvector + HNSW indexing
+  - access-agent with query classification (static/dynamic/combined)
+  - 10 MCP servers deployed for live data access
+  - Argilla integration for human review
+- **Key Learnings**:
+  - Fine-tuned models didn't reliably retain facts
+  - Worse, they hallucinated details around what they did memorize
+  - RAG retrieves verified answers - no hallucination risk
 - **Next Steps**:
-  1. Export existing "good" Q&A pairs from production
-  2. Run MCP extraction for compute-resources + software-discovery
-  3. Set up training infrastructure on GH200
-  4. Begin model pilot comparing architectures
+  1. Expand Q&A pairs to cover more documentation
+  2. Implement authenticated actions (Phase 2)
 
 ## Related Repositories
 
-- [access-mcp](https://github.com/necyberteam/access-mcp) - MCP servers for ACCESS data
-- [access-qa-extraction](https://github.com/necyberteam/access-qa-extraction) - Q&A pair extraction from MCP servers
-- [access-qa-training](https://github.com/necyberteam/access-qa-training) - Fine-tuning pipeline for ACCESS Q&A model
-- n8n workflows - Query routing and orchestration
-- cyberteam_drupal - Drupal integration for events
+| Repository | Description |
+|------------|-------------|
+| [access-agent](https://github.com/necyberteam/access-agent) | LangGraph agent with RAG + MCP integration |
+| [access-qa-service](https://github.com/necyberteam/access-qa-service) | FastAPI service for Q&A retrieval (pgvector) |
+| [access-mcp](https://github.com/necyberteam/access_mcp) | MCP servers for ACCESS data (10 servers) |
+| [access-qa-extraction](https://github.com/necyberteam/access-qa-extraction) | Q&A pair extraction from MCP servers |
+| [access-qa-training](https://github.com/necyberteam/access-qa-training) | **DEPRECATED** - Fine-tuning pipeline (archived) |
 
 ## Contributing
 

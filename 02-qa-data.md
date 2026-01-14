@@ -1,18 +1,18 @@
-# Training Data Preparation
+# Q&A Data Preparation
 
-> **Part of the Data Pipeline**: [Agent Architecture](./01-agent-architecture.md) → This doc → [Review System](./03-review-system.md) → [Model Training](./04-model-training.md)
+> **Part of the Data Pipeline**: [Agent Architecture](./01-agent-architecture.md) → This doc → [Review System](./03-review-system.md)
 
 ## Overview
 
-Training data comes from three sources, combined into a unified dataset:
+Q&A data comes from three sources, combined into a unified dataset for RAG retrieval:
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                        TRAINING DATA SOURCES                                 │
+│                           Q&A DATA SOURCES                                   │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │                                                                             │
 │  ┌─────────────────┐   ┌─────────────────┐   ┌─────────────────┐           │
-│  │  MCP EXTRACTED  │   │   USER Q&A DB   │   │  RAG DOCS Q&A   │           │
+│  │  MCP EXTRACTED  │   │   USER Q&A DB   │   │  DOCS Q&A       │           │
 │  │                 │   │                 │   │                 │           │
 │  │  Structured     │   │  Real user      │   │  LLM-generated  │           │
 │  │  from API data  │   │  questions      │   │  from PDFs      │           │
@@ -26,22 +26,30 @@ Training data comes from three sources, combined into a unified dataset:
 │               └──────────┬──────────┘                                       │
 │                          ▼                                                  │
 │               ┌─────────────────────┐                                       │
-│               │   UNIFIED DATASET   │                                       │
+│               │  ARGILLA REVIEW     │                                       │
+│               └──────────┬──────────┘                                       │
+│                          ▼                                                  │
+│               ┌─────────────────────┐                                       │
+│               │  QA SERVICE (RAG)   │                                       │
 │               └─────────────────────┘                                       │
 │                                                                             │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
-### Why Q&A Pairs, Not Raw Documents
+### Why Q&A Pairs for RAG
 
-Research and industry practice show that fine-tuning on Q&A pairs is more effective than training on raw documentation:
+Q&A pairs are ideal for retrieval because:
 
-| Approach | Pros | Cons |
-|----------|------|------|
-| **Q&A Pairs** | Teaches question-answering format directly; clearer training signal; reduces hallucination | Requires generation/curation effort |
-| **Raw Docs** | Easy to collect | Model learns document structure, not Q&A format; higher hallucination rate |
+| Benefit | Why It Matters |
+|---------|----------------|
+| **Question-aware retrieval** | Embed the question, not the answer - matches how users ask |
+| **Complete answers** | Each pair has a verified, human-approved answer ready to serve |
+| **Citations included** | Answers include source markers for attribution |
+| **Curated quality** | Every pair reviewed in Argilla before entering the database |
 
-Q&A pairs also capture what users *actually ask*, not just what documentation covers. Real user questions from production are especially valuable.
+### Architecture Note
+
+> **Historical context**: This document was originally "Training Data Preparation" for fine-tuning a model. After pilot experiments showed the fine-tuned model didn't reliably retain facts and hallucinated details around what it did memorize, we pivoted to RAG-primary architecture. The same Q&A pairs are now used for semantic retrieval instead of model training. See [Model Training (Deprecated)](./04-model-training.md) for historical context.
 
 ---
 
@@ -49,63 +57,43 @@ Q&A pairs also capture what users *actually ask*, not just what documentation co
 
 ### Which Servers to Extract From
 
-**Static Data (TRAIN INTO MODEL)**:
+**Static Data (for RAG retrieval)**:
 
-| Server | Tools | Update Frequency | Priority |
-|--------|-------|------------------|----------|
-| compute-resources | 2 | Monthly | **HIGH** |
-| software-discovery | 3 | Weekly | **HIGH** |
-| allocations | 1 | Weekly | MEDIUM |
-| nsf-awards | 1 | Weekly | MEDIUM |
-| affinity-groups | 1 | Monthly | LOW |
+| Server | Update Frequency | Priority |
+|--------|------------------|----------|
+| compute-resources | Monthly | **HIGH** |
+| software-discovery | Weekly | **HIGH** |
+| allocations | Weekly | MEDIUM |
+| nsf-awards | Weekly | MEDIUM |
+| affinity-groups | Monthly | LOW |
 
-**Dynamic Data (KEEP AS LIVE MCP)** - Do NOT train these:
+**Dynamic Data (KEEP AS LIVE MCP)** - Do NOT create Q&A pairs:
 
-| Server | Tools | Why Keep Live |
-|--------|-------|---------------|
-| system-status | 1 | Real-time outages |
-| events | 1 | Schedules change frequently |
-| announcements | 1 | Time-sensitive |
-| xdmod-charts | 3 | Always need current metrics |
+| Server | Why Keep Live |
+|--------|---------------|
+| system-status | Real-time outages |
+| events | Schedules change frequently |
+| announcements | Time-sensitive |
+| xdmod-charts | Always need current metrics |
 
 ### Q&A Templates by Domain
 
 #### Compute Resources
 
-**Simple Factual**:
-- "What GPUs does {resource_name} have?"
-- "How many nodes does {resource_name} have?"
-- "What is the memory per node on {resource_name}?"
-- "What organization operates {resource_name}?"
-
-**Discovery**:
-- "What compute resources are available on ACCESS?"
-- "Which ACCESS resources have GPUs?"
-- "What resources does {organization} operate?"
-
-**Comparison**:
-- "Compare {resource_a} and {resource_b}"
-- "Which has more GPUs, {resource_a} or {resource_b}?"
-
-**Recommendation**:
-- "What resource should I use for machine learning?"
-- "Which system is best for large memory jobs?"
+| Question Type | Examples |
+|---------------|----------|
+| **Simple Factual** | "What GPUs does {resource} have?", "How many nodes does {resource} have?" |
+| **Discovery** | "What compute resources are available?", "Which resources have GPUs?" |
+| **Comparison** | "Compare {resource_a} and {resource_b}" |
+| **Recommendation** | "What resource should I use for machine learning?" |
 
 #### Software Discovery
 
-**Availability**:
-- "Is {software} available on ACCESS?"
-- "Where can I find {software}?"
-- "Is {software} available on {resource}?"
-- "What version of {software} is on {resource}?"
-
-**Resource-Specific**:
-- "What software is available on {resource}?"
-- "What ML frameworks are on {resource}?"
-
-**Category-Based**:
-- "What bioinformatics software is available?"
-- "What visualization tools are available?"
+| Question Type | Examples |
+|---------------|----------|
+| **Availability** | "Is {software} available on ACCESS?", "What version of {software} is on {resource}?" |
+| **Resource-Specific** | "What software is available on {resource}?" |
+| **Category-Based** | "What bioinformatics software is available?" |
 
 #### Allocations
 
@@ -113,37 +101,23 @@ Q&A pairs also capture what users *actually ask*, not just what documentation co
 - "What {field} projects are on ACCESS?"
 - "Find projects about {topic}"
 
-#### Negative Examples - Defer to Live
-
-These train the model to recognize when NOT to answer from memory:
-
-- "Is Delta currently down?" → "I need to check live system status..."
-- "What events are happening this week?" → "Event schedules require live data..."
-- "What's my current SU balance?" → "I cannot access user-specific information..."
-- "Is my project TG-ABC123 still active?" → "Project details require live verification..."
-
-### Expected Output from MCP Extraction
-
-Counts TBD after running extraction pipeline. Will depend on:
-- Number of resources, software packages, allocations in each MCP server
-- Number of Q&A templates per entity type
-- Coverage of negative/deferral examples needed
-
 ---
 
 ## Source 2: Existing User Q&A Database
 
 ### What We Have
-- Q&A pairs from production RAG system (count TBD)
+- Q&A pairs from production RAG system
 - Staff-labeled "good" / "bad" quality ratings
 - Real user questions (authentic distribution)
 
 ### Cleanup Tasks
 
-1. **Filter "good" only** - Keep only staff-approved answers
-2. **Check freshness** - Flag answers that may be outdated (resource specs, software versions)
-3. **Deduplicate** - Remove near-duplicate questions
-4. **Normalize citations** - Convert to `<<SRC:...>>` format
+| Task | Purpose |
+|------|---------|
+| Filter "good" only | Keep only staff-approved answers |
+| Check freshness | Flag answers that may be outdated |
+| Deduplicate | Remove near-duplicate questions |
+| Normalize citations | Convert to standard source marker format |
 
 ### Quality Criteria
 
@@ -163,17 +137,7 @@ Generate Q&A pairs from existing ACCESS documentation (PDFs, web pages, guides).
 
 1. **Chunk documents** into logical sections
 2. **LLM generates Q&A** for each section - questions a user might ask, with answers citing the source
-3. **Human reviews** generated pairs before adding to training data
-
-### LLM Prompt for Q&A Generation
-
-Given a documentation section, generate questions a real user might ask, with answers that cite the source.
-
-**Requirements**:
-1. Questions should be natural, varied complexity
-2. Answers should be complete but concise
-3. Each answer must include citation marker
-4. Include "how to" questions where appropriate
+3. **Human reviews** generated pairs in Argilla before adding to database
 
 ### Document Categories
 
@@ -188,7 +152,7 @@ Given a documentation section, generate questions a real user might ask, with an
 
 ## Deduplication Strategy
 
-Multiple sources generate overlapping questions. Deduplication prevents wasted training capacity.
+Multiple sources generate overlapping questions. Deduplication prevents retrieval of near-duplicates.
 
 ### Process
 
@@ -199,93 +163,38 @@ Multiple sources generate overlapping questions. Deduplication prevents wasted t
 ### Priority Rules
 
 When choosing between duplicates:
-1. **User Q&A** > Doc Q&A > MCP Q&A (real questions highest value)
-2. **More complete answer** > shorter answer
-3. **Better citations** > missing citations
-4. **More recent** > older (for time-sensitive content)
+
+| Priority | Source | Rationale |
+|----------|--------|-----------|
+| 1 | User Q&A | Real questions, highest value |
+| 2 | Doc Q&A | Covers documentation gaps |
+| 3 | MCP Q&A | Structured but formulaic |
+
+Additional factors: more complete answer > shorter; better citations > missing; more recent > older.
 
 ---
 
-## Output Format
+## Q&A Pair Format
 
-### JSONL Schema
+Each Q&A pair includes:
 
-```json
-{
-  "id": "qa_00001",
-  "source": "mcp_extraction | user_qa | doc_generated",
-  "source_ref": "mcp://compute-resources/resources/delta.ncsa.access-ci.org",
-  "domain": "compute:resource_specs",
-  "messages": [
-    {
-      "role": "user",
-      "content": "What GPUs does Delta have?"
-    },
-    {
-      "role": "assistant",
-      "content": "Delta at NCSA is equipped with NVIDIA A100 GPUs...\n\n<<SRC:compute-resources:delta.ncsa.access-ci.org>>"
-    }
-  ],
-  "metadata": {
-    "complexity": "simple | moderate | complex",
-    "has_citation": true,
-    "created_at": "2025-12-08T00:00:00Z"
-  }
-}
-```
+| Field | Description |
+|-------|-------------|
+| question | The user question |
+| answer | Complete answer with citation markers |
+| domain | Category (e.g., `compute-resources`, `software-discovery`) |
+| entity_id | Specific resource/entity the Q&A is about |
+| metadata | Source type, creation date, complexity level |
 
-### Source Reference Format
+### Citation Format
 
-The `source_ref` field provides traceability back to the origin of each Q&A pair:
-
-| Source Type | source_ref Format | Example |
-|-------------|-------------------|---------|
-| MCP extraction | `mcp://{server}/{endpoint}/{entity_id}` | `mcp://compute-resources/resources/delta.ncsa.access-ci.org` |
-| Documentation | URL with anchor | `https://docs.access-ci.org/guides/getting-started.pdf#page=12` |
-| User Q&A | Internal reference | `session:{session_id}/question:{question_id}` |
-
-### Source Versioning
-
-For documentation-based Q&A pairs, track the source version to detect when regeneration is needed:
-
-| Field | Description | Example |
-|-------|-------------|---------|
-| `source_hash` | Content hash of source at extraction time | `sha256:a1b2c3...` |
-| `source_modified` | Last-modified date of source | `2025-01-05T00:00:00Z` |
-
-When the source document is updated:
-1. Compare stored `source_hash` to current document hash
-2. If changed, flag derived Q&A pairs for review
-3. Reviewer decides: keep, regenerate, or delete
-
-For MCP extractions, the entity data itself changes - change detection at extraction time handles this (see Automated Refresh Pipeline below).
-
-This enables:
-- Finding all Q&A pairs derived from a specific source when that source changes
-- Invalidating or re-generating Q&A when source data is updated
-- Auditing training data lineage
-
-### Directory Structure
-
-```
-training_data/
-├── raw/
-│   ├── mcp/                    # Extracted from MCP servers
-│   ├── user_qa/                # Exported from production
-│   └── docs/                   # Generated from PDFs
-├── processed/
-│   ├── deduplicated.jsonl
-│   └── quality_filtered.jsonl
-└── final/
-    ├── train.jsonl             # 90% split
-    └── validation.jsonl        # 10% split
-```
+Answers include source markers that the agent converts to clickable links. Format: `<<SRC:domain:entity_id>>`
 
 ---
 
 ## Automated Refresh Pipeline
 
-Data sources update at different frequencies. Automated extraction keeps training data current.
+Data sources update at different frequencies. Automated extraction keeps Q&A data current.
 
 ### Refresh Cadences
 
@@ -305,59 +214,37 @@ For each extraction:
 1. Compare new data vs cached data
 2. Identify new, modified, and deleted entities
 3. Generate Q&A only for changed entities
-4. Queue for human review if changes exceed threshold
+4. Queue for human review in Argilla
 
-### Retraining Triggers
+### Argilla → QA Service Sync
 
-| Trigger | Threshold | Rationale |
-|---------|-----------|-----------|
-| New Q&A pairs accumulated | >10% of training set | Significant new knowledge |
-| Modified Q&A pairs | >5% of training set | Enough drift to matter |
-| Negative user feedback | >2% of responses | Quality degradation signal |
-| Scheduled | Quarterly | Catch gradual drift |
-| Manual | On major release | New resources, policy changes |
-
-> *Details on human review: [03-review-system.md](./03-review-system.md)*
+After Q&A pairs are approved in Argilla:
+1. Sync runs on schedule (or triggered)
+2. Approved pairs are embedded for semantic search
+3. Pairs are upserted to vector database
+4. New pairs are immediately available for retrieval
 
 ---
 
 ## Domain Tagging
 
-Each Q&A pair is tagged with a domain category. This enables:
+Each Q&A pair is tagged with a domain. This enables:
 
-1. **Coverage analysis** - Identify gaps (e.g., few questions about data transfer)
-2. **Dataset balancing** - Ensure the model doesn't over-learn one domain
-3. **Targeted improvements** - When users report issues in a domain, add more examples there
-4. **Evaluation slicing** - Measure accuracy per domain, not just overall
-
-### How Tags Are Applied
-
-- **MCP extraction**: Automatic based on source server (compute-resources → `compute`)
-- **User Q&A**: Manual tagging during review, or classifier-assisted
-- **Documentation**: Based on document section/category
+| Use Case | Benefit |
+|----------|---------|
+| Routing to reviewers | Different teams review different domains |
+| Coverage analysis | Identify gaps across data sources |
+| Filtered retrieval | Search within specific domains |
+| Evaluation slicing | Measure accuracy per domain |
 
 ### Taxonomy
 
-```yaml
-domains:
-  compute:
-    - resource_specs      # "What GPUs does Delta have?"
-    - hardware_comparison # "Compare Delta and Expanse"
-    - resource_selection  # "What system for ML training?"
-  software:
-    - availability        # "Is TensorFlow on Delta?"
-    - versions           # "What version of Python?"
-    - category_search    # "What visualization tools?"
-  allocations:
-    - project_discovery  # "Find quantum computing projects"
-    - statistics         # "What fields use ACCESS most?"
-  process:
-    - getting_started    # "How do I get an account?"
-    - job_submission     # "How do I submit a job?"
-    - data_transfer      # "How do I transfer files?"
-  status:
-    - defer_to_live      # Questions that should trigger MCP calls
-```
+Domains align with MCP servers and data sources:
+
+| Category | Domains |
+|----------|---------|
+| MCP servers | compute-resources, software-discovery, allocations, affinity-groups, nsf-awards |
+| Documentation | docs-getting-started, docs-user-guides, docs-technical |
 
 ---
 
@@ -365,10 +252,10 @@ domains:
 
 | Source | Priority | Notes |
 |--------|----------|-------|
-| MCP extraction | High | Structured, reliable - count depends on entities in MCP servers |
-| User Q&A database | Highest | Real questions - count depends on quality filter pass rate |
-| Documentation | Medium | Covers gaps - count depends on corpus size |
+| MCP extraction | High | Structured, reliable |
+| User Q&A database | Highest | Real questions |
+| Documentation | Medium | Covers gaps |
 
-Final dataset size TBD after extraction and deduplication.
+Q&A pairs flow through Argilla review, then sync to access-qa-service for RAG retrieval.
 
-→ *Next in pipeline: [Review System](./03-review-system.md)* - Human review before training
+→ *Next in pipeline: [Review System](./03-review-system.md)* - Human review before deployment

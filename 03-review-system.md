@@ -1,6 +1,6 @@
 # Review System
 
-> **Part of the Data Pipeline**: [Training Data](./02-training-data.md) → This doc → [Model Training](./04-model-training.md)
+> **Part of the Data Pipeline**: [Q&A Data Preparation](./02-qa-data.md) → This doc
 >
 > **Related**: [Agent Architecture](./01-agent-architecture.md) | [Observability](./08-observability.md)
 
@@ -8,31 +8,43 @@
 
 Web application for reviewing Q&A data at two critical points:
 
-1. **Pre-Training Review**: Approve Q&A pairs before they go into training data
-2. **Post-Deployment Feedback**: Capture user feedback on model outputs, flag bad answers for correction
+1. **Pre-Deployment Review**: Approve Q&A pairs before they enter the RAG database
+2. **Post-Deployment Feedback**: Capture user feedback on agent responses, flag bad answers for correction
 
-Built on [Argilla](https://argilla.io), an open-source data annotation platform for LLM feedback and training data curation, with a thin integration layer for ACCESS-specific features.
+Built on [Argilla](https://argilla.io), an open-source data annotation platform for LLM feedback and data curation, with a thin integration layer for ACCESS-specific features.
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                         REVIEW SYSTEM SCOPE                                  │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │                                                                             │
-│  PRE-TRAINING                              POST-DEPLOYMENT                  │
-│  ────────────                              ───────────────                  │
+│  PRE-DEPLOYMENT (batch extraction)       POST-DEPLOYMENT (live)             │
+│  ─────────────────────────────────       ──────────────────────             │
 │                                                                             │
-│  MCP Extraction ──┐                        User asks question               │
-│                   │                               │                         │
-│  User Q&A DB ─────┼──▶ Argilla ──▶ Approved     │                         │
-│                   │    Review     Training  ──▶ Model ──▶ Response         │
-│  Documentation ───┘    UI         Data          │                         │
-│                                                  ▼                         │
-│                                           User feedback                     │
-│                                           (thumbs up/down)                  │
-│                                                  │                         │
-│                                                  ▼                         │
-│                                           Argilla ◀──── Flag bad answers   │
-│                                           (correct & retrain)              │
+│  ┌─────────────────────┐                 ┌─────────────────────┐            │
+│  │ Python Extractors   │                 │ Agent (LangGraph)   │            │
+│  │ - MCP extraction    │                 │ - User questions    │            │
+│  │ - Doc ingestion     │                 │ - User feedback     │            │
+│  │ - Embeddings/dedup  │                 │ - Thumbs up/down    │            │
+│  └──────────┬──────────┘                 └──────────┬──────────┘            │
+│             │                                       │                       │
+│             │      Push directly to Argilla         │                       │
+│             └──────────────────┬────────────────────┘                       │
+│                                ▼                                            │
+│                         ┌─────────────┐                                     │
+│                         │   Argilla   │                                     │
+│                         │   Review    │──▶ Approved Q&A → RAG Database      │
+│                         └──────┬──────┘                                     │
+│                                │                                            │
+│                                ▼                                            │
+│                   ┌────────────────────────┐                                │
+│                   │ Auth Proxy + Notifier  │                                │
+│                   │ - CILogon auth         │                                │
+│                   │ - Slack/email alerts   │                                │
+│                   └────────────────────────┘                                │
+│                                │                                            │
+│                                ▼                                            │
+│                           Reviewers                                         │
 │                                                                             │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
@@ -47,16 +59,23 @@ Built on [Argilla](https://argilla.io), an open-source data annotation platform 
 | **Self-hostable** | Docker deployment on existing infrastructure |
 | **Active community** | Open-source with good documentation |
 
-### What We Build (Integration Layer)
+### What We Build
 
-Argilla doesn't provide everything we need. A thin Node.js integration service handles:
+**Data flows directly to Argilla** from two sources:
+
+| Source | Technology | Responsibility |
+|--------|------------|----------------|
+| **Python Extractors** | Python batch jobs | MCP extraction, doc ingestion, embeddings, dedup, push to Argilla, export approved data |
+| **Agent** | LangGraph (Python) | Capture user Q&A and feedback during conversations, push to Argilla |
+
+**Auth Proxy + Notifier** (thin service) handles Argilla integration:
 
 | Responsibility | Description |
 |----------------|-------------|
 | **CILogon Authentication** | OAuth flow with ACCESS IdP, maps users to Argilla |
-| **Notifications** | Slack/email alerts for pending reviews |
-| **Data Ingestion** | API to receive Q&A pairs from extraction pipeline |
-| **Export** | Format approved records for training pipeline |
+| **Notifications** | Slack/email alerts for pending reviews, monitors Argilla |
+| **User Preferences** | Stores notification settings, domain assignments |
+| **Real-Time Sync** | Webhook listener syncs approved Q&A to agent infrastructure (Redis + pgvector) |
 
 ---
 
@@ -64,32 +83,50 @@ Argilla doesn't provide everything we need. A thin Node.js integration service h
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                              DEPLOYMENT                                      │
+│                              DATA SOURCES                                    │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │                                                                             │
-│   Digital Ocean Droplet (existing)                                          │
-│   ┌─────────────────────────────────────────────────────────────────────┐   │
-│   │                                                                     │   │
-│   │   ┌─────────────┐    ┌─────────────┐    ┌─────────────┐            │   │
-│   │   │   Argilla   │    │  Elastic-   │    │   Redis     │            │   │
-│   │   │   Server    │◀──▶│  search     │    │  (vectors)  │            │   │
-│   │   │   :6900     │    │   :9200     │    │   :6379     │            │   │
-│   │   └──────┬──────┘    └─────────────┘    └─────────────┘            │   │
-│   │          │                                                          │   │
-│   │          │ API                                                      │   │
-│   │          ▼                                                          │   │
-│   │   ┌─────────────┐                                                   │   │
-│   │   │ Integration │    ┌─────────────┐                                │   │
-│   │   │   Service   │◀──▶│ PostgreSQL  │  (user mappings, preferences) │   │
-│   │   │   :3010     │    │   :5432     │                                │   │
-│   │   └──────┬──────┘    └─────────────┘                                │   │
-│   │          │                                                          │   │
-│   └──────────┼──────────────────────────────────────────────────────────┘   │
-│              │                                                              │
-│              ▼                                                              │
+│   ┌─────────────────────┐              ┌─────────────────────┐              │
+│   │  Python Extractors  │              │  Agent (LangGraph)  │              │
+│   │  (batch jobs)       │              │  (production)       │              │
+│   │                     │              │                     │              │
+│   │  - MCP extraction   │              │  - User questions   │              │
+│   │  - Doc ingestion    │              │  - Feedback capture │              │
+│   │  - Embeddings       │              │  - Thumbs up/down   │              │
+│   │  - Dedup check      │              │                     │              │
+│   │  - Export approved  │              │                     │              │
+│   └──────────┬──────────┘              └──────────┬──────────┘              │
+│              │                                    │                         │
+│              │         Argilla Python SDK         │                         │
+│              └─────────────────┬──────────────────┘                         │
+│                                ▼                                            │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                         DEPLOYMENT (Digital Ocean)                           │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│   ┌─────────────┐    ┌─────────────┐    ┌─────────────┐                    │
+│   │   Argilla   │    │  Elastic-   │    │   Redis     │                    │
+│   │   Server    │◀──▶│  search     │    │  (Argilla)  │                    │
+│   │   :6900     │    │   :9200     │    │   :6379     │                    │
+│   └──────┬──────┘    └─────────────┘    └─────────────┘                    │
+│          │                                                                  │
+│          │ Argilla UI + Webhooks                                            │
+│          ▼                                                                  │
+│   ┌──────────────────┐    ┌─────────────┐                                  │
+│   │  Auth Proxy +    │◀──▶│ PostgreSQL  │  (user prefs, role mappings)     │
+│   │  Notifier        │    │   :5432     │                                  │
+│   │  :3010           │    └─────────────┘                                  │
+│   │                  │                                                      │
+│   │  - CILogon OAuth │───▶ Slack/Email                                     │
+│   │  - Notifications │                                                      │
+│   │  - Webhook sync  │───▶ Agent Redis (citations) + pgvector (RAG)        │
+│   └────────┬─────────┘                                                      │
+│            │                                                                │
+│            ▼                                                                │
 │   ┌─────────────────┐                                                       │
-│   │  Nginx Proxy    │◀─── CILogon OAuth (via integration service)           │
-│   │  review.access  │                                                       │
+│   │  Nginx Proxy    │◀─── review.access-ci.org                              │
 │   └─────────────────┘                                                       │
 │                                                                             │
 └─────────────────────────────────────────────────────────────────────────────┘
@@ -99,9 +136,9 @@ Argilla doesn't provide everything we need. A thin Node.js integration service h
 
 ## Datasets
 
-### Pre-Training Review Dataset
+### Pre-Deployment Review Dataset
 
-For reviewing Q&A pairs generated from MCP extractions, documentation, and other sources before they enter training data.
+For reviewing Q&A pairs generated from MCP extractions, documentation, and other sources before they enter the RAG database.
 
 **Fields:**
 
@@ -156,7 +193,7 @@ For reviewing production responses that received negative user feedback.
 
 | Action | Type | Description |
 |--------|------|-------------|
-| Review Action | Label | correct_answer, acceptable, add_to_training, dismiss |
+| Review Action | Label | correct_answer, acceptable, add_to_database, dismiss |
 | Corrected Answer | Text | The correct answer (if correcting) |
 | Notes | Text | Reviewer notes |
 
@@ -174,7 +211,7 @@ Workspaces align with MCP servers/backend systems. Each team reviews Q&A related
 
 ```
 Argilla Workspaces
-├── qa-review (Pre-training review)
+├── qa-review (Pre-deployment review)
 │   ├── announcements (Support team)
 │   ├── compute-resources (Operations team)
 │   ├── allocations (Allocations team)
@@ -193,7 +230,7 @@ Argilla Workspaces
 
 | Review Type | Assignment Logic |
 |-------------|------------------|
-| **Pre-training Q&A** | Based on `source_domain` - the MCP server the Q&A was extracted from |
+| **Pre-deployment Q&A** | Based on `source_domain` - the MCP server the Q&A was extracted from |
 | **Production feedback** | Based on `tools_used` - all teams whose tools were called can review |
 
 For multi-tool queries (e.g., question that called both `compute-resources` and `allocations`), the feedback appears in both workspaces. Either team can review, or admins can coordinate.
@@ -218,32 +255,123 @@ For multi-tool queries (e.g., question that called both `compute-resources` and 
 
 ## Data Flows
 
-### Ingestion: Extraction → Argilla
+### Ingestion: Batch Extraction → Argilla
 
-1. Extraction pipeline generates Q&A pairs
-2. Integration service receives pairs via API
-3. For each pair:
-   - Generate question embedding
-   - Check for duplicates (vector similarity search)
-   - If duplicate found, flag in metadata
-   - Push record to qa-review dataset
-4. Records appear in Argilla UI for review
+Python extractors run as scheduled jobs or manually triggered:
+
+1. Extractor fetches data from MCP servers or parses documents
+2. LLM generates Q&A pairs with source_data for reviewer verification
+3. Extractor generates question embeddings
+4. Extractor checks for duplicates via Argilla SDK (`find_similar_records`)
+5. If duplicate found, flag in metadata
+6. Push record directly to Argilla qa-review dataset
+7. Records appear in Argilla UI for review
 
 ### Ingestion: Production Feedback → Argilla
 
-1. User gives thumbs-down in qa-bot-core
-2. qa-bot-core calls integration service API
-3. Integration service creates record in feedback-review dataset
-4. Record appears in Argilla UI for review
-5. Positive feedback logged to Grafana only (not queued for human review)
+Agent captures feedback during live conversations:
 
-### Export: Argilla → Training Pipeline
+1. User interacts with agent, asks questions
+2. Agent logs Q&A pairs (potential additions to RAG database)
+3. User gives thumbs-down or flags response
+4. Agent pushes feedback record directly to Argilla feedback-review dataset
+5. Record appears in Argilla UI for review
+6. Positive feedback logged to Grafana only (not queued for human review)
 
-1. Export triggered (manual or scheduled)
-2. Integration service queries Argilla for approved records
+### Sync: Argilla → QA Service
+
+Approved Q&A pairs are synced to access-qa-service for RAG retrieval:
+
+1. Sync triggered (manual, scheduled, or via webhook)
+2. Query Argilla for approved records via SDK
 3. For edited records, use edited version over original
-4. Format as JSONL with metadata
-5. Write to export location for training pipeline
+4. Generate embeddings and upsert to pgvector database
+5. New pairs immediately available for retrieval
+
+### Real-Time Sync: Argilla → Agent Infrastructure
+
+Approved Q&A pairs are synced in real-time to the agent's hallucination detection systems via Argilla webhooks.
+
+**Why Real-Time Sync?**
+
+The agent uses two systems that need approved Q&A data:
+
+| System | Purpose | Sync Priority |
+|--------|---------|---------------|
+| **Citation Registry (Redis)** | Validates `<<SRC:domain:entity_id>>` citations to detect hallucinations | Critical - used on every static answer |
+| **RAG Vector Store (pgvector)** | Semantic search fallback when hallucination detected | Secondary - only used on validation failure |
+
+Both are updated together via the same webhook for simplicity - one code path, consistent state.
+
+**Webhook Flow:**
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                     WEBHOOK-DRIVEN SYNC                                      │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│  Argilla                      Auth Proxy + Notifier                         │
+│  ───────                      ─────────────────────                         │
+│                                                                             │
+│  Reviewer approves ──webhook──► @webhook_listener("record.completed")       │
+│  Q&A pair              │                                                    │
+│                        ▼                                                    │
+│              ┌─────────────────────────────────────────┐                    │
+│              │  1. Parse approved Q&A record           │                    │
+│              │  2. Extract domain + entity_id          │                    │
+│              │  3. Add to Redis citation registry      │                    │
+│              │  4. Generate question embedding         │                    │
+│              │  5. Add to pgvector RAG store           │                    │
+│              │  6. Increment approved_count            │                    │
+│              └─────────────────────────────────────────┘                    │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+**Argilla Webhook Events:**
+
+Argilla supports [webhook listeners](https://docs.argilla.io/latest/how_to_guides/webhooks/) for record events:
+
+| Event | When Fired | Our Use |
+|-------|------------|---------|
+| `record.completed` | Record status → completed | Sync approved Q&A to agent |
+| `record.updated` | Record modified | Re-sync if previously approved |
+| `record.deleted` | Record removed | Remove from citation registry + RAG |
+
+**Implementation in Auth Proxy + Notifier:**
+
+```python
+import argilla as rg
+from argilla import webhook_listener
+
+@webhook_listener(events=["record.completed"])
+async def on_record_approved(record: rg.Record, type: str, timestamp: datetime):
+    """Sync approved Q&A to agent infrastructure."""
+
+    # Extract Q&A data
+    question = record.fields["question"]
+    answer = record.fields["answer"]
+    domain = record.metadata["domain"]
+    entity_id = extract_entity_id(record.metadata["source_ref"])
+
+    # 1. Add to citation registry (Redis)
+    await redis_client.set(f"citation:{domain}:{entity_id}", "1")
+
+    # 2. Add to RAG vector store (pgvector)
+    embedding = embedding_model.encode(question)
+    await pg_pool.execute(
+        "INSERT INTO qa_pairs (question, answer, domain, entity_id, question_embedding) ...",
+        question, answer, domain, entity_id, embedding
+    )
+
+    # 3. Track approved count for monitoring
+    await redis_client.incr("approved_count")
+```
+
+**Benefits:**
+- **Immediate availability**: Approved Q&A usable for retrieval within seconds
+- **No manual steps**: Reviewers just approve; sync happens automatically
+- **Consistent state**: Citation registry and RAG store always match approved data
 
 ---
 
@@ -254,7 +382,6 @@ For multi-tool queries (e.g., question that called both `compute-resources` and 
 | New items pending review | Domain reviewers | Email + Slack | Normal |
 | Review threshold reached (>N pending for >3 days) | Assigned reviewers | Slack @mention | Normal |
 | Extraction failed | Admins | Email + Slack | High |
-| Retrain threshold reached | Admins | Email + Slack | High |
 | Weekly summary | All users | Email | Low |
 
 ### User Preferences
@@ -268,17 +395,16 @@ Stored in integration service database:
 
 ## Custom Features
 
-These require implementation in the integration service (not provided by Argilla):
+Features beyond core Argilla functionality:
 
-### Drift Detection
+### Drift Detection (Python Extractors)
 
-- Periodic job compares recent model responses against current MCP data
-- If model answer contradicts current data, record added to feedback-review with `drift` type
-- Flagged when model gives outdated information
-- Triggers retrain consideration
+- Periodic job compares Q&A pairs against current MCP data
+- If stored answer contradicts current data, record flagged for review
+- Flagged when information may be outdated
 - Frequency: Weekly or on-demand
 
-### Implicit Feedback Tracking
+### Implicit Feedback Tracking (Agent)
 
 Signals logged for pattern analysis (not individual review):
 
@@ -292,7 +418,7 @@ Signals logged for pattern analysis (not individual review):
 
 These are logged to Grafana for aggregate analysis. Only surfaced to Argilla review if systematic issues detected.
 
-### Source Data Change Alerts
+### Source Data Change Alerts (Python Extractors)
 
 - Track hashes of source data from extractions
 - When source changes, notify reviewers that derived Q&A pairs may need review
@@ -306,9 +432,9 @@ When a production response is flagged (thumbs down, drift, etc.):
 
 | Action | Result |
 |--------|--------|
-| Correct the answer | Add corrected Q&A pair to training data |
-| Mark as acceptable | Dismiss flag, no training data change |
-| Identify pattern | Create new training examples to address systematic issue |
+| Correct the answer | Add corrected Q&A pair to RAG database |
+| Mark as acceptable | Dismiss flag, no database change |
+| Identify pattern | Create new Q&A pairs to address systematic gap |
 
 ---
 
@@ -326,21 +452,22 @@ When a production response is flagged (thumbs down, drift, etc.):
 
 ---
 
-### Phase 2: Data Ingestion Pipeline
+### Phase 2: Python Extractors → Argilla
 
-- Create integration service scaffold
-- Implement ingestion API endpoint
-- Add embedding generation for duplicate detection
-- Connect extraction pipeline to push to Argilla
+- Add Argilla SDK to Python extractors (`access-qa-extraction`)
+- Implement embedding generation for duplicate detection
+- Add `find_similar_records` dedup check before insert
+- Push records directly to Argilla qa-review dataset
 - Test end-to-end: extraction → Argilla → review
 
 **Deliverable:** Extracted Q&A pairs appear in Argilla for review
 
 ---
 
-### Phase 3: CILogon Authentication
+### Phase 3: Auth Proxy + Notifier Service
 
-- Add OAuth routes to integration service
+- Create thin Node.js service for auth and notifications
+- Add CILogon OAuth routes
 - Implement CILogon → Argilla user mapping
 - Set up Nginx proxy for auth flow
 - Create workspace/role assignment logic
@@ -352,37 +479,40 @@ When a production response is flagged (thumbs down, drift, etc.):
 
 ### Phase 4: Notifications
 
-- Implement Slack webhook integration
-- Add pending count monitoring
+- Add Slack webhook integration to notifier service
+- Implement pending count monitoring (poll Argilla)
 - Create stale item alerts
 - Add email notifications (optional)
 - Set up weekly summary job
+- Store user preferences in PostgreSQL
 
 **Deliverable:** Reviewers notified of pending work
 
 ---
 
-### Phase 5: Production Feedback Loop
+### Phase 5: Agent Feedback Integration
 
-- Create feedback-review dataset
-- Add feedback ingestion endpoint
-- Connect qa-bot-core thumbs down to Argilla
-- Implement drift detection (basic version)
+- Create feedback-review dataset in Argilla
+- Add Argilla client to LangGraph agent
+- Capture user Q&A pairs during conversations
+- Push thumbs-down feedback to Argilla
+- Implement drift detection in extractors (basic version)
 - Test feedback → review → correction flow
 
 **Deliverable:** User feedback flows into review queue
 
 ---
 
-### Phase 6: Export & Training Integration
+### Phase 6: Webhook Sync to QA Service
 
-- Implement export API
-- Create training data format (JSONL)
-- Add export scheduling
-- Connect to training pipeline
-- Document export process
+**Real-Time Sync (webhook-driven):**
+- Add Argilla webhook listener to Auth Proxy + Notifier
+- Listen for `record.completed`, `record.updated`, `record.deleted` events
+- Sync approved Q&A to agent's Redis (citation registry) and pgvector (RAG store)
 
-**Deliverable:** Approved data exported for model training
+**Deliverable:**
+- Approved Q&A synced to QA service in real-time
+- New Q&A pairs immediately available for retrieval
 
 ---
 
@@ -395,10 +525,10 @@ When a production response is flagged (thumbs down, drift, etc.):
 | Argilla Server | 1GB | 1GB | Python/FastAPI |
 | Elasticsearch | 2GB | 10GB | Vector search, records |
 | Redis | 256MB | 1GB | Caching |
-| Integration Service | 512MB | 1GB | Node.js |
-| PostgreSQL | 512MB | 5GB | Metadata (may already exist) |
+| Auth Proxy + Notifier | 256MB | 100MB | Thin Node.js service |
+| PostgreSQL | 512MB | 5GB | User prefs (may already exist) |
 
-**Total additional:** ~4GB RAM, ~18GB storage
+**Total additional:** ~4GB RAM, ~17GB storage
 
 ### External Services
 
@@ -406,14 +536,26 @@ When a production response is flagged (thumbs down, drift, etc.):
 - Email service (existing Mailgun or similar)
 - Embedding API (OpenAI or local model like all-MiniLM-L6-v2)
 
+### Python Extractors (run separately)
+
+- Can run locally, in CI, or as cron on any server with network access to Argilla
+- Requires: Python 3.11+, Anthropic API key, Argilla API key
+- No persistent infrastructure needed
+
 ---
 
 ## Open Questions
 
 1. **Argilla version**: Use Argilla v1 (stable) or v2 (newer SDK)?
-2. **Embedding model**: OpenAI embeddings vs local model?
-3. **Reviewer onboarding**: Who are the initial reviewers for each domain?
-4. **Export frequency**: On-demand vs scheduled exports?
+2. **Reviewer onboarding**: Who are the initial reviewers for each domain?
+
+## Resolved Questions
+
+| Question | Decision | Rationale |
+|----------|----------|-----------|
+| **Embedding model** | `sentence-transformers/all-MiniLM-L6-v2` | Fast, local, 384 dims, good quality for short Q&A |
+| **Sync frequency** | Real-time webhook | Approved Q&A immediately available for retrieval |
+| **Where does sync live** | Auth Proxy + Notifier service | Natural fit - it's the Argilla integration layer |
 
 ---
 
@@ -426,4 +568,4 @@ When a production response is flagged (thumbs down, drift, etc.):
 
 ---
 
-> *Next in pipeline: [Model Training](./04-model-training.md)* - What happens with approved data
+> Approved Q&A pairs sync to [access-qa-service](https://github.com/necyberteam/access-qa-service) for RAG retrieval.

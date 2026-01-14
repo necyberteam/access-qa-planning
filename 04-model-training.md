@@ -1,6 +1,8 @@
 # Model Training
 
-> **Part of the Data Pipeline**: [Training Data](./02-training-data.md) → [Review System](./03-review-system.md) → This doc
+> **⚠️ DEPRECATED**: This approach was set aside after pilot experiments. The fine-tuned model didn't reliably retain factual details, and worse, hallucinated additional details around what it did memorize - mixing real and fabricated information. The system now uses RAG-primary architecture instead. See [Agent Architecture](./01-agent-architecture.md) for the current approach.
+
+> **Part of the Data Pipeline**: [Q&A Data Preparation](./02-qa-data.md) → [Review System](./03-review-system.md) → This doc
 >
 > **Related**: [Agent Architecture](./01-agent-architecture.md)
 
@@ -113,14 +115,18 @@ Response with clickable links
 
 ### Source Registry
 
-Maps source IDs to display info:
+Maps citation domains to user-facing URLs:
 
-| Source ID | Display Name | URL |
-|-----------|--------------|-----|
-| compute-resources:delta.ncsa.access-ci.org | Delta Hardware Specifications | https://access-ci.org/resource/delta/ |
-| doc:allocations-guide.pdf:page-15 | ACCESS Allocations Guide, Page 15 | https://access-ci.org/docs/allocations-guide.pdf#page=15 |
+| Domain | URL Pattern | Example |
+|--------|-------------|---------|
+| compute-resources | `https://allocations.access-ci.org/resources/{resource_id}` | [Delta](https://allocations.access-ci.org/resources/delta.ncsa.access-ci.org) |
+| software-discovery | `https://sds.access-ci.org/details/{software_name}` | [GROMACS](https://sds.access-ci.org/details/gromacs) |
+| events | `https://support.access-ci.org/events/{event_id}` | Training workshops |
+| affinity-groups | `https://support.access-ci.org/affinity-groups/{group_name}` | Community groups |
+| allocations | `https://allocations.access-ci.org/` | Allocation info |
+| doc | Original document URL with anchor | PDF/web documentation |
 
-Unknown sources logged for registry update.
+Unknown sources logged for registry update. Multiple citations per response are expected when answers reference multiple resources.
 
 ---
 
@@ -183,23 +189,89 @@ Each query labeled with:
 
 ---
 
-## Model Serving
+## Model Deployment
 
-### Options
+### Initial Target: Fireworks.ai
 
-| Server | Notes |
-|--------|-------|
-| vLLM | Optimized for high throughput |
-| TGI (Text Generation Inference) | HuggingFace, good for single-model |
+For pilot and early production, deploy via **Fireworks.ai**:
 
-Consider quantization (GPTQ/AWQ) for faster inference if latency targets not met.
+| Factor | Benefit |
+|--------|---------|
+| Serverless | No idle costs during low-traffic phase |
+| LoRA upload | Train on GH200, deploy anywhere |
+| OpenAI-compatible API | Easy to switch providers later |
+| ~$0.20/M tokens | Fine-tuned models same price as base |
 
-### Confidence-Aware Fallback
+Workflow: Train LoRA on GH200 → Upload via `firectl` CLI → Agent calls API
 
-When model response shows low confidence:
-- Check for hedging language ("I'm not sure", "might be")
-- Check for missing expected citations
-- Fall back to live MCP call
+### Future Options
+
+If traffic increases or requirements change:
+
+| Option | When to Consider |
+|--------|------------------|
+| Together.ai, Anyscale | Better pricing at scale |
+| Self-hosted (vLLM/TGI) | If GH200 or similar becomes available for serving |
+| Replicate | If need custom scaling behavior |
+
+The OpenAI-compatible API used by Fireworks means migration is mostly a config change.
+
+### Hallucination Detection & Fallback
+
+Fine-tuned models learn citation format well but hallucinate confidently about unknown topics, fabricating plausible-sounding citations (e.g., `<<SRC:compute-resources:stampede2.tacc.access-ci.org>>`).
+
+**Detection**: Validate citations against known MCP entities. Invalid citations indicate hallucination. Testing showed 100% detection rate on hallucinated responses.
+
+**Fallback**: When hallucination is detected, fall back to Q&A RAG retrieval (see below).
+
+### Fallback Architecture
+
+```
+User Question
+      │
+      ▼
+Fine-tuned Model (~200ms)
+      │
+      ▼
+Citation Validation
+      │
+      ├── Valid → Return response (fast path)
+      │
+      └── Invalid → Q&A RAG Fallback
+                          │
+                          ├── Match found → Return retrieved answer
+                          └── No match → Graceful refusal
+```
+
+### Single Corpus for Training & Retrieval
+
+The same Q&A pairs power both systems:
+
+| Use | Purpose |
+|-----|---------|
+| Fine-tuning | Train model on Q&A pairs |
+| RAG retrieval | Embed questions, retrieve matching answers |
+
+**Benefits**:
+- One maintenance burden—update pairs, both systems improve
+- Consistent answer style and citations
+- Self-correcting: RAG retrieves what model should have said
+- No drift between training and retrieval
+
+### Q&A RAG
+
+FAQ-style retrieval is a proven pattern. Unlike document RAG:
+
+| Aspect | Document RAG | Q&A RAG |
+|--------|--------------|---------|
+| Chunking | Must split docs | Not needed |
+| Answer quality | LLM synthesizes | Pre-written, verified |
+| Citations | Added post-hoc | Already included |
+| Latency | Retrieval + generation | Retrieval only |
+
+**How it works**: Embed Q&A questions with sentence embeddings. Match user query to most similar question. Return the paired answer directly.
+
+**Implementation details**: See [hallucination-mitigation-plan.md](https://github.com/necyberteam/access-qa-extraction/docs/hallucination-mitigation-plan.md) in access-qa-extraction.
 
 ---
 

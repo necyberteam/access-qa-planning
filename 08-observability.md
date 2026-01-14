@@ -117,18 +117,26 @@ Frontend                    Agent                      MCP Server               
 
 ## Instrumentation Points
 
-### Agent (Python)
+### Agent (Python) - Implemented
 
 | Location | Span Name | Attributes |
 |----------|-----------|------------|
-| `/query` endpoint | `http.request` | `request_id`, `session_id` |
-| `run_agent()` | `agent.run` | `question_id` |
-| `plan_node()` | `agent.plan` | `requires_tools`, `tool_count` |
-| `execute_node()` | `agent.execute` | `strategy`, `tool_count` |
-| `MCPClient.call_tool()` | `mcp.call_tool` | `server`, `tool_name`, `success`, `duration_ms` |
-| `synthesize_node()` | `agent.synthesize` | `answer_length` |
+| `run_agent()` | `agent.run` | `query`, `session_id`, `question_id`, `user`, `tools_used`, `answer_length` |
+| `classify_node()` | `agent.classify` | `query_type`, `confidence`, `reason` |
+| `rag_answer_node()` | `agent.rag_answer` | `threshold`, `matches_found`, `best_score`, `result` |
+| `plan_node()` | `agent.plan` | `query`, `tools_planned`, `strategy`, `requires_tools` |
+| `execute_node()` | `agent.execute` | `tools_executed`, `tools_succeeded` |
+| `synthesize_node()` | `agent.synthesize` | `strategy`, `has_rag`, `has_tools`, `answer_length` |
+| `MCPClient.call_tool()` | `mcp.call_tool.{tool}` | `server`, `tool`, `arguments`, `success`, `result.*` |
+| `QAServiceClient.search()` | `rag.search` | `duration_ms`, `cached`, `matches_returned` |
 
-### MCP Servers (Node.js)
+### LLM Calls (Auto-Instrumented via LangChain)
+
+| Location | Span Name | Attributes |
+|----------|-----------|------------|
+| Any `ChatOpenAI.ainvoke()` | `ChatOpenAI.chat` | `langgraph_node`, `ls_model_name`, `ls_temperature`, `gen_ai.usage.input_tokens`, `gen_ai.usage.output_tokens`, `gen_ai.usage.cache_read_input_tokens` |
+
+### MCP Servers (Node.js) - Not Yet Implemented
 
 | Location | Span Name | Attributes |
 |----------|-----------|------------|
@@ -266,75 +274,89 @@ This approach provides operational visibility without collecting user PII in the
 
 ---
 
-## Implementation Phases
+## Implementation Status
 
-### Phase 1: Grafana Cloud Setup
+### Phase 1: Grafana Cloud Setup ✅
 
-- Create Grafana Cloud account (free tier)
-- Note OTLP endpoint and API key
-- Create service account for agent/MCP servers
-
-**Deliverable:** Working Grafana Cloud instance with credentials
+- Grafana Cloud account created (accessci.grafana.net)
+- OTLP endpoint configured for Tempo (traces)
+- API tokens generated for agent access
 
 ---
 
-### Phase 2: Agent Instrumentation (Python)
+### Phase 2: Agent Instrumentation (Python) ✅
 
-- Add OpenTelemetry dependencies
-- Create telemetry setup module
-- Instrument API routes
-- Instrument agent nodes
-- Instrument MCP client
-- Add environment variables for Grafana credentials
-- Test trace export locally
+Implemented in `access-agent/src/telemetry/`:
 
-**Deliverable:** Agent sends traces to Grafana Cloud
+| Component | Status | Notes |
+|-----------|--------|-------|
+| OpenTelemetry SDK | ✅ | OTLP HTTP exporter to Grafana Cloud |
+| FastAPI auto-instrumentation | ✅ | Via `opentelemetry-instrumentation-fastapi` |
+| HTTPX auto-instrumentation | ✅ | Traces MCP HTTP calls |
+| LangChain auto-instrumentation | ✅ | Via `opentelemetry-instrumentation-langchain` |
+| Agent node spans | ✅ | classify, rag_answer, plan, execute, synthesize |
+| MCP tool call spans | ✅ | Server, tool name, arguments, results |
+| Root span linking | ✅ | All child spans under `agent.run` |
 
----
+**LLM Call Tracing:**
 
-### Phase 3: MCP Server Instrumentation (Node.js)
+LangChain instrumentation automatically captures for each LLM call:
+- Model name (gpt-4o-mini, gpt-4o)
+- Input/output token counts
+- Cached token counts (OpenAI prompt caching)
+- Latency
 
-- Add OpenTelemetry dependencies to shared package
-- Create telemetry setup in shared package
-- Initialize telemetry in each MCP server
-- Add custom spans for tool execution
-- Propagate trace context from incoming requests
-- Test trace export
+**CLI Tool:**
 
-**Deliverable:** MCP servers send traces to Grafana Cloud, correlated with agent traces
+`scripts/traces.py` provides quick access to recent traces:
 
----
-
-### Phase 4: Request ID Propagation
-
-- Generate `X-Request-ID` in qa-bot-core if not present
-- Accept `X-Request-ID` in agent API
-- Pass `X-Request-ID` to MCP servers
-- Log `X-Request-ID` in all services
-
-**Deliverable:** Single request ID visible across all services
+```bash
+python scripts/traces.py           # Last 5 agent runs
+python scripts/traces.py -n 10     # Last 10
+python scripts/traces.py -t <id>   # Specific trace
+python scripts/traces.py -m        # MCP calls only
+```
 
 ---
 
-### Phase 5: Dashboards
+### Phase 3: MCP Server Instrumentation (Node.js) 🚧
 
-- Create System Overview dashboard
-- Create User Activity dashboard
-- Create MCP Tools dashboard
-- Set up saved searches in trace explorer
-- Configure dashboard permissions
+Not yet implemented. MCP servers currently don't export traces.
 
-**Deliverable:** Stakeholders can view system activity via web UI
+**TODO:**
+- Add OpenTelemetry to `@access-mcp/shared`
+- Instrument each MCP server
+- Propagate trace context from agent
 
 ---
 
-### Phase 6: Alerting (Optional)
+### Phase 4: Request ID Propagation 🚧
 
-- Configure notification channels (Slack, email)
-- Create alert rules
-- Test alerting
+Partially implemented:
+- Agent generates `question_id` for each query
+- Session ID tracked across conversation turns
+- **TODO:** Full X-Request-ID header propagation
 
-**Deliverable:** Automated notifications for errors and anomalies
+---
+
+### Phase 5: Dashboards 🚧
+
+Not yet created. Using Grafana Explore for now.
+
+**TODO:**
+- System Overview dashboard
+- MCP Tools dashboard
+- LLM cost tracking dashboard
+
+---
+
+### Phase 6: Alerting 🚧
+
+Not yet configured.
+
+**TODO:**
+- High error rate alerts
+- Latency threshold alerts
 
 ---
 
