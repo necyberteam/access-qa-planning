@@ -98,6 +98,7 @@ The system is built on three main components: the access-agent (LangGraph) handl
 
 | Document | Purpose |
 |----------|---------|
+| [mcp-extraction-impl.md](./mcp-extraction-impl.md) | MCP Q&A extraction pipeline implementation |
 | [drupal-announcements-api-spec.md](./drupal-announcements-api-spec.md) | Drupal API spec for Announcements (Phase 1 pilot) |
 
 ## Reading Paths
