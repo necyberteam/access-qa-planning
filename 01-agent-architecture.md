@@ -169,6 +169,21 @@ The agent uses an LLM to classify queries based on intent:
 - Multiple aspects: "specs AND status", "capabilities AND availability"
 - Comparative with current state: "compare to what's available now"
 
+### Query Expansion
+
+The classifier also **expands follow-up queries** into standalone questions by resolving pronouns and references from conversation history:
+
+```
+User: "What GPUs does Delta have?"
+Agent: "Delta has NVIDIA A100 GPUs..."
+
+User: "What about Expanse?"
+      ↓ Expanded to:
+      "What GPUs does Expanse have?"
+```
+
+This ensures RAG retrieval works correctly for follow-up questions that would otherwise lack context.
+
 ### Similarity Thresholds
 
 Different thresholds for different query types:
@@ -256,6 +271,23 @@ User: "What GPU resources does Delta have and is it currently operational?"
 - Maintain single, coherent voice
 - Preserve citations from RAG matches
 - Include real-time status from tools
+
+### Token Budget & Condensation
+
+When tool results are very large (e.g., listing software across multiple resources), the synthesizer includes a **token budget check**:
+
+| Setting | Default | Purpose |
+|---------|---------|---------|
+| `SYNTHESIS_TOKEN_BUDGET` | 80,000 | Max tokens for tool results before condensation |
+
+If tool results exceed the budget:
+1. An intermediate LLM call extracts only query-relevant information
+2. The condensed results are passed to final synthesis
+3. This prevents context overflow while preserving important details
+
+```
+Large tool results (261K tokens) → Condense → Relevant subset (8K tokens) → Synthesize
+```
 
 ---
 

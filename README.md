@@ -136,6 +136,7 @@ For AI agents to take actions on behalf of users:
 - **Next Steps**:
   1. Expand Q&A pairs to cover more documentation
   2. Implement authenticated actions (Phase 2)
+  3. Integrate Atlassian JSM MCP server for support ticket creation/lookup
 
 ## Related Repositories
 

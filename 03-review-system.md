@@ -546,8 +546,7 @@ When a production response is flagged (thumbs down, drift, etc.):
 
 ## Open Questions
 
-1. **Argilla version**: Use Argilla v1 (stable) or v2 (newer SDK)?
-2. **Reviewer onboarding**: Who are the initial reviewers for each domain?
+1. **Reviewer onboarding**: Who are the initial reviewers for each domain?
 
 ## Resolved Questions
 
