@@ -93,6 +93,7 @@ The system is built on three main components: the access-agent (LangGraph) handl
 | 06 | [mcp-authentication.md](./06-mcp-authentication.md) | Authentication architecture | OAuth 2.1, CILogon proxy, token strategy |
 | 07 | [backend-integration-spec.md](./07-backend-integration-spec.md) | Backend API contract | Service tokens, X-Acting-User, authorization patterns |
 | 08 | [observability.md](./08-observability.md) | Distributed tracing & monitoring | Grafana Cloud, OpenTelemetry, dashboards |
+| 09 | [researcher-profiles.md](./09-researcher-profiles.md) | User personalization | AI profile storage, Drupal integration, privacy controls |
 
 ### Implementation Specs
 
