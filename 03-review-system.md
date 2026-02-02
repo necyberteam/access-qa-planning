@@ -179,27 +179,46 @@ For reviewing production responses that received negative user feedback.
 
 **Fields:**
 
-| Field | Description |
-|-------|-------------|
-| question | Original user question |
-| response | Model's response that received feedback |
-| conversation_context | Prior conversation turns (if multi-turn) |
-| feedback_type | `thumbs_down`, `flagged`, `drift` |
-| question_id | Links back to production logs / Grafana traces |
-| session_id | Session for context |
-| tools_used | List of MCP tools called to generate the response |
+| Field | Type | Description |
+|-------|------|-------------|
+| question | text | Original user question |
+| response | text | Model's response that received feedback |
+| conversation_context | text[] | Prior conversation turns (if multi-turn) |
+| feedback_type | enum | `thumbs_down`, `thumbs_up` |
+| feedback_tags | text[] | User-selected reasons: `factually_wrong`, `outdated`, `incomplete`, `other` |
+| user_comment | text | Optional free-text comment from user |
+| question_id | uuid | Links back to production logs / Grafana traces |
+| session_id | uuid | Session for context |
+| tools_used | text[] | List of MCP tools called to generate the response |
+| rag_matches | json | RAG retrieval results (question, score) for debugging |
+| trace_id | string | OpenTelemetry trace ID for Grafana correlation |
+| timestamp | datetime | When feedback was submitted |
 
 **Review Actions:**
 
 | Action | Type | Description |
 |--------|------|-------------|
-| Review Action | Label | correct_answer, acceptable, add_to_database, dismiss |
+| Review Action | Label | `correct_answer`, `acceptable`, `add_to_database`, `dismiss` |
 | Corrected Answer | Text | The correct answer (if correcting) |
+| Priority | Label | `high`, `normal`, `low` (auto-set based on feedback_tags) |
 | Notes | Text | Reviewer notes |
+
+**Auto-Priority Rules:**
+
+| Feedback Tag | Auto-Priority | Rationale |
+|--------------|---------------|-----------|
+| `factually_wrong` | High | Incorrect info is urgent |
+| `outdated` | Normal | May need source refresh |
+| `incomplete` | Normal | RAG/synthesis tuning |
+| `other` | Normal | Needs triage |
+| (no tag, just thumbs_down) | Low | Less actionable without context |
 
 **Filters:**
 - Feedback type
+- Feedback tags (new)
+- Priority (new)
 - Tools used (routes to domain reviewers)
+- Date range
 
 ---
 
@@ -225,6 +244,16 @@ Argilla Workspaces
     ├── allocations
     └── ... (mirrors qa-review structure)
 ```
+
+> **Note: Access Control Granularity**
+>
+> Argilla supports access control at the workspace and dataset level, but not at the individual record level. Currently, reviewers filter by `tools_used` metadata to see their domain's feedback, but they *can* see other teams' records if they remove the filter.
+>
+> If strict team isolation becomes a requirement, options include:
+> - **Separate datasets per team** (e.g., `feedback-compute`, `feedback-allocations`) with team members assigned only to their dataset
+> - **Separate workspaces per team** for full isolation
+>
+> The current single-dataset approach is simpler to maintain. Splitting is straightforward if needed later.
 
 ### Reviewer Assignment
 
@@ -277,6 +306,328 @@ Agent captures feedback during live conversations:
 4. Agent pushes feedback record directly to Argilla feedback-review dataset
 5. Record appears in Argilla UI for review
 6. Positive feedback logged to Grafana only (not queued for human review)
+
+---
+
+## Feedback Collection
+
+### Feedback Types
+
+Based on [research into conversational AI feedback](https://denser.ai/blog/chatbot-feedback/) and [implicit feedback in LLM dialogues](https://arxiv.org/html/2507.23158), we collect multiple feedback signals:
+
+| Type | Signal | Collection | Destination |
+|------|--------|------------|-------------|
+| **Explicit** | Thumbs up/down | User action in UI | Argilla (thumbs-down) / Grafana (thumbs-up) |
+| **Explicit** | Written comment | Optional text field | Argilla with feedback record |
+| **Explicit** | Flag as harmful/wrong | User action in UI | Argilla (priority review) |
+| **Behavioral** | Follow-up clarification | Agent detects rephrasing | Grafana (aggregate analysis) |
+| **Behavioral** | Session abandonment | No response after agent reply | Grafana (aggregate analysis) |
+| **Behavioral** | Query repetition | Same/similar question re-asked | Grafana (aggregate analysis) |
+| **Behavioral** | Escalation request | User asks for human help | Grafana + potential Argilla flag |
+
+### Explicit Feedback: What Users Can Do
+
+| Action | UI Element | Result |
+|--------|------------|--------|
+| **Thumbs up** | 👍 button on response | Logged to Grafana; no review queue |
+| **Thumbs down** | 👎 button on response | Pushed to Argilla for review |
+| **Add comment** | Text field (appears after thumbs down) | Attached to Argilla record |
+| **Flag as wrong** | "This is incorrect" link | Pushed to Argilla, tagged `factually_wrong` |
+| **Flag as harmful** | "This is inappropriate" link | Pushed to Argilla, tagged `harmful`, priority queue |
+
+### Implicit Feedback: Behavioral Signals
+
+These are logged automatically—no user action required. Based on [Meta's RLUF research](https://arxiv.org/html/2505.14946), behavioral signals can indicate satisfaction without interrupting the user.
+
+| Signal | How Detected | Interpretation | Caution |
+|--------|--------------|----------------|---------|
+| **Rephrasing** | User's next message is semantically similar to previous | Possible confusion or incomplete answer | Could be refinement, not dissatisfaction |
+| **Abandonment** | Session ends within 30s of response, no further interaction | Possible dissatisfaction | User may have gotten what they needed |
+| **Copy action** | User copies response text (if detectable) | Positive—found useful | Browser-dependent |
+| **Escalation** | User says "talk to human" / "contact support" | Agent couldn't help | Clear negative signal |
+| **Quick follow-up** | Next question within 10s | Engaged, possibly incomplete answer | Could be multi-part query |
+
+**Important**: [Research shows](https://arxiv.org/html/2507.23158) implicit feedback is "noisy as a learning signal." We use it for **aggregate pattern detection**, not individual response evaluation.
+
+### Feedback API
+
+The agent exposes a feedback endpoint for the chat UI:
+
+**Endpoint**: `POST /api/feedback`
+
+**Request**:
+```json
+{
+  "session_id": "uuid",
+  "message_id": "uuid",
+  "feedback_type": "thumbs_down",
+  "comment": "The GPU count was wrong",
+  "tags": ["factually_wrong"]
+}
+```
+
+**Feedback Types**:
+| Type | Description |
+|------|-------------|
+| `thumbs_up` | Positive rating |
+| `thumbs_down` | Negative rating |
+| `flag_wrong` | Factually incorrect |
+| `flag_harmful` | Inappropriate content |
+| `flag_outdated` | Information is stale |
+
+**Response**:
+```json
+{
+  "status": "received",
+  "feedback_id": "uuid"
+}
+```
+
+**Processing Flow**:
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                         FEEDBACK PROCESSING FLOW                             │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│   Chat UI                     Agent                      Destinations       │
+│   ───────                     ─────                      ────────────       │
+│                                                                             │
+│   User clicks 👎 ───────────► POST /api/feedback                            │
+│   + optional comment                  │                                     │
+│                                       ▼                                     │
+│                               ┌───────────────┐                             │
+│                               │ Enrich with:  │                             │
+│                               │ - Full Q&A    │                             │
+│                               │ - Tools used  │                             │
+│                               │ - RAG scores  │                             │
+│                               │ - Trace ID    │                             │
+│                               └───────┬───────┘                             │
+│                                       │                                     │
+│                         ┌─────────────┼─────────────┐                       │
+│                         ▼             ▼             ▼                       │
+│                   ┌──────────┐  ┌──────────┐  ┌──────────┐                  │
+│                   │ Argilla  │  │ Grafana  │  │ Drupal   │                  │
+│                   │ (review) │  │ (metrics)│  │ (future) │                  │
+│                   └──────────┘  └──────────┘  └──────────┘                  │
+│                                                                             │
+│   thumbs_down, flag_* ────────► Argilla feedback-review dataset             │
+│   All feedback ───────────────► Grafana (metrics, dashboards)               │
+│   If AI profile enabled ──────► Drupal /api/ai-profile (future)             │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Argilla Record Structure
+
+When feedback is pushed to Argilla:
+
+```json
+{
+  "question": "What GPUs does Delta have?",
+  "response": "Delta has NVIDIA V100 GPUs...",
+  "conversation_context": ["prior", "messages"],
+  "feedback_type": "thumbs_down",
+  "user_comment": "It's A100s, not V100s",
+  "tags": ["factually_wrong"],
+  "tools_used": ["compute-resources"],
+  "rag_matches": [{"question": "...", "score": 0.87}],
+  "trace_id": "abc123",
+  "session_id": "xyz789",
+  "timestamp": "2025-01-30T10:00:00Z"
+}
+```
+
+### Grafana Metrics
+
+All feedback (positive and negative) logged to Grafana for dashboards:
+
+| Metric | Description |
+|--------|-------------|
+| `feedback_total` | Count by type (thumbs_up, thumbs_down, flag_*) |
+| `feedback_by_tool` | Breakdown by MCP tools used |
+| `feedback_by_domain` | Breakdown by Q&A domain |
+| `satisfaction_rate` | thumbs_up / (thumbs_up + thumbs_down) |
+| `escalation_rate` | Requests for human help |
+| `abandonment_rate` | Sessions ending without resolution |
+
+### Chat UI Implementation
+
+**Repository**: `qa-bot-core` (React component library)
+
+**Current State**: Simple thumbs up/down with `rating: 1` or `rating: 0`
+
+**Target State**: Expanded feedback with reason selection and optional comment
+
+#### UI Flow
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                         FEEDBACK UI FLOW                                     │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│  After bot response, show:                                                  │
+│  ┌─────────────────────────────────────────────────────────────────────┐   │
+│  │  Was this helpful?   [👍 Yes]   [👎 No]                             │   │
+│  └─────────────────────────────────────────────────────────────────────┘   │
+│                                                                             │
+│  If 👍 clicked:                                                             │
+│  ┌─────────────────────────────────────────────────────────────────────┐   │
+│  │  Thanks for the feedback! Feel free to ask another question.        │   │
+│  └─────────────────────────────────────────────────────────────────────┘   │
+│  → Send: { feedback_type: "thumbs_up" }                                    │
+│                                                                             │
+│  If 👎 clicked, expand to show:                                             │
+│  ┌─────────────────────────────────────────────────────────────────────┐   │
+│  │  What was the issue?                                                │   │
+│  │                                                                     │   │
+│  │  ○ This is incorrect                                                │   │
+│  │  ○ This is outdated                                                 │   │
+│  │  ○ This didn't answer my question                                   │   │
+│  │  ○ Other                                                            │   │
+│  │                                                                     │   │
+│  │  [Optional: Add details ________________________]                   │   │
+│  │                                                                     │   │
+│  │  [Submit feedback]   [Skip]                                         │   │
+│  └─────────────────────────────────────────────────────────────────────┘   │
+│                                                                             │
+│  If user selects reason + submits:                                         │
+│  → Send: { feedback_type: "thumbs_down", tags: ["factually_wrong"],        │
+│            comment: "user's optional comment" }                            │
+│                                                                             │
+│  If user clicks Skip:                                                       │
+│  → Send: { feedback_type: "thumbs_down" }  (no additional detail)          │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+#### Feedback Reasons (Tags)
+
+| UI Option | Tag Sent | Priority |
+|-----------|----------|----------|
+| "This is incorrect" | `factually_wrong` | High - routes to domain expert |
+| "This is outdated" | `outdated` | Medium - triggers freshness check |
+| "This didn't answer my question" | `incomplete` | Medium - RAG/synthesis issue |
+| "Other" | `other` | Normal |
+
+#### Changes Required in qa-bot-core
+
+**File**: `src/utils/flows/qa-flow.tsx`
+
+1. **Add feedback state machine**: Instead of immediately sending on 👎 click, transition to `feedback_detail` state
+
+2. **New flow states**:
+   ```
+   qa_loop → (👎) → feedback_detail → (submit) → qa_loop
+                                    → (skip)   → qa_loop
+   ```
+
+3. **Expanded payload**: Change from `{ rating: 0 }` to:
+   ```json
+   {
+     "sessionId": "uuid",
+     "queryId": "uuid",
+     "feedback_type": "thumbs_down",
+     "tags": ["factually_wrong"],
+     "comment": "optional user comment"
+   }
+   ```
+
+4. **Backward compatibility**: If no `ratingEndpoint` configured, skip feedback entirely (current behavior)
+
+#### Component Props
+
+New optional props for QABot component:
+
+| Prop | Type | Default | Description |
+|------|------|---------|-------------|
+| `expandedFeedback` | boolean | `true` | Show reason selection on thumbs-down |
+| `feedbackReasons` | array | (see above) | Customize available reasons |
+| `requireFeedbackReason` | boolean | `false` | Require reason selection (no Skip) |
+
+### Agent Implementation
+
+**Repository**: `access-agent` (LangGraph Python)
+
+The agent receives feedback from the chat UI and routes it to Argilla and Grafana.
+
+#### New Endpoint
+
+| Endpoint | Method | Purpose |
+|----------|--------|---------|
+| `/api/feedback` | POST | Receive feedback from chat UI |
+
+#### Responsibilities
+
+1. **Receive feedback** from chat UI (session_id, query_id, feedback_type, tags, comment)
+2. **Retrieve Q&A context** for the query being rated (question, response, tools used, RAG matches)
+3. **Log to Grafana** - all feedback (positive and negative) for metrics
+4. **Push to Argilla** - negative feedback only, for human review
+
+#### Context Retrieval
+
+The agent must retrieve the original Q&A to include in the Argilla record. Options:
+
+| Approach | Pros | Cons |
+|----------|------|------|
+| **LangGraph checkpointer** | Already stores conversation state | Couples feedback to checkpointer internals |
+| **Redis cache** | Simple, decoupled, TTL-based expiry | Additional infrastructure |
+
+**Recommendation**: Cache Q&A context in Redis when response is sent (1 hour TTL). Retrieve on feedback submission.
+
+#### Priority Assignment
+
+Agent auto-assigns priority based on feedback tags:
+
+| Tag | Priority | Rationale |
+|-----|----------|-----------|
+| `factually_wrong` | High | Incorrect info needs urgent review |
+| `outdated` | Normal | May need source data refresh |
+| `incomplete` | Normal | RAG/synthesis tuning |
+| `other` | Normal | Needs triage |
+| (no tags) | Low | Less actionable without detail |
+
+### Argilla Dataset Changes
+
+**Dataset**: `feedback-review` (in `production` workspace)
+
+#### New/Updated Fields
+
+| Field | Type | New? | Description |
+|-------|------|------|-------------|
+| `feedback_tags` | text[] | **New** | User-selected reasons from UI |
+| `user_comment` | text | **New** | Optional free-text from user |
+| `rag_matches` | json | **New** | RAG results for debugging |
+| `trace_id` | string | **New** | Links to Grafana traces |
+| `priority` | enum | **New** | Auto-assigned: high/normal/low |
+
+#### New Filters
+
+Reviewers can filter the queue by:
+- Priority (high first)
+- Feedback tags (e.g., show only `factually_wrong`)
+- Tools used (route to domain experts)
+- Date range
+
+#### Review Workflow Changes
+
+1. **Priority sorting**: High priority items surface first in review queue
+2. **Tag visibility**: Feedback tags and user comment shown prominently to reviewer
+3. **Trace link**: Reviewer can click trace_id to see full conversation in Grafana
+
+### Future: Integration with Researcher Profile
+
+If the user has an [AI profile enabled](./09-researcher-profiles.md), feedback can inform personalization:
+
+| Feedback | Profile Update |
+|----------|----------------|
+| Repeated thumbs-down on GPU recommendations | Note: user finds GPU info unhelpful |
+| Thumbs-up on detailed explanations | Preference: detailed responses |
+| Flag "outdated" on allocation info | Note: user sensitive to stale data |
+
+This is **opt-in only** and requires the Drupal profile feature (Phase 2+).
+
+---
 
 ### Sync: Argilla → QA Service
 

@@ -67,6 +67,38 @@ MCP_API_KEY=<shared secret>
 MCP_API_KEY=<same shared secret>
 ```
 
+## User Identity & Privacy
+
+### The Problem
+
+JSM identifies users by email address, but MCP authentication uses ACCESS ID (CILogon eppn). These may differ:
+
+| System | Identifier | Example |
+|--------|------------|---------|
+| MCP / CILogon | ACCESS ID | `jsmith@access-ci.org` |
+| JSM / Atlassian | Email | `john.smith@university.edu` |
+
+### Solution: Dual Verification
+
+Both ACCESS ID and email are already available from the authentication flow (passed to qa-bot-core). The MCP server sends both to the proxy, which verifies both match on JSM tickets:
+
+| Header | Source | Purpose |
+|--------|--------|---------|
+| `X-Acting-User` | Drupal (from CILogon/COmanage/Allocations API) | Audit trail, JSM ACCESS ID field match |
+| `X-User-Email` | Drupal user profile | JSM reporter match |
+
+Proxy queries JSM with dual filter - only tickets where **both** ACCESS ID field and reporter email match are returned.
+
+### Why This Is Secure
+
+- **Neither value comes from user input** - both come from Drupal based on the authenticated session
+- **Both must match** - can't query tickets with just one identifier
+- **Tickets without ACCESS ID are ignored** - prevents access to legacy tickets that can't be verified
+
+### Tradeoff
+
+Tickets created before ACCESS ID was captured won't be returned. Security is prioritized over completeness.
+
 ## Netlify Proxy API Contract
 
 ### Endpoints

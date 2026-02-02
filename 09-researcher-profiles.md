@@ -132,6 +132,9 @@ The profile should automatically incorporate existing Community Persona data:
 | Preferred resources | Usage via MCP allocations | Ongoing |
 | Question patterns | Session analysis | 90 days |
 | Unanswered questions | Session tracking | Until resolved |
+| Feedback patterns | [Feedback API](./03-review-system.md#feedback-collection) | Ongoing |
+
+**Feedback-Derived Insights**: When users provide explicit feedback (thumbs up/down), patterns can inform the profile. For example, repeated negative feedback on GPU recommendations might indicate the user needs different information. See [Feedback Collection](./03-review-system.md#feedback-collection) for details on how feedback flows through the system.
 
 ### What We Don't Store
 

@@ -22,7 +22,10 @@ Retrieve tickets owned by or participated in by a specific user.
 
 | Header | Required | Description |
 |--------|----------|-------------|
-| `X-User-Email` | Yes | Email address of the user whose tickets to retrieve |
+| `X-User-Email` | Yes | Email address of the user (from Drupal) |
+| `X-Acting-User` | Yes | ACCESS ID of the user (from Drupal) |
+
+Both headers are required for dual verification - see [User Identity & Privacy](./jsm-mcp-server-plan.md#user-identity--privacy).
 
 #### Query Parameters
 
@@ -86,27 +89,25 @@ GET /rest/servicedeskapi/request
 - `start` - Pagination offset
 
 **Authentication:**
-The proxy uses a service account. To query tickets for a specific user, use:
-- Option A: Impersonation via `X-ExperimentalApi: opt-in` + service account with "Browse users" permission
-- Option B: Query by reporter email using JQL: `reporter = "user@email.com"`
+The proxy uses a service account with JQL search.
 
-### Recommended Approach
+### Recommended Approach: Dual Verification
 
-Use JQL search since the proxy already has service account credentials:
+For security, query must match **both** ACCESS ID and email. This prevents users from viewing other users' tickets even if they know their email.
 
 ```
 GET /rest/api/3/search
 ```
 
-With JQL:
+With JQL (both conditions required):
 ```
-project = ACCESS AND reporter = "user@email.com" ORDER BY created DESC
+project = ACCESS
+  AND "ACCESS ID" = "jsmith@access-ci.org"
+  AND reporter = "john.smith@university.edu"
+ORDER BY created DESC
 ```
 
-Or for the Service Desk project specifically:
-```
-"Service Desk" = "ACCESS Support" AND "Customer Request Email" = "user@email.com"
-```
+**Note**: Tickets without the ACCESS ID field populated will not be returned. This is intentional - we cannot verify ownership of legacy tickets that lack ACCESS ID.
 
 ## Implementation Notes
 
