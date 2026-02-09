@@ -21,12 +21,17 @@ Q&A data comes from three sources, combined into a unified dataset for RAG retri
 │           └──────────────┬──────┴─────────────────────┘                     │
 │                          ▼                                                  │
 │               ┌─────────────────────┐                                       │
-│               │   DEDUPLICATION &   │                                       │
-│               │   QUALITY FILTER    │                                       │
+│               │   DEDUPLICATION     │                                       │
 │               └──────────┬──────────┘                                       │
 │                          ▼                                                  │
 │               ┌─────────────────────┐                                       │
-│               │  ARGILLA REVIEW     │                                       │
+│               │  QUALITY EVALUATION │  ◀── LLM judge scores each pair       │
+│               │  (LLM-as-judge)     │      on faithfulness, relevance,      │
+│               └──────────┬──────────┘      completeness                     │
+│                          ▼                                                  │
+│               ┌─────────────────────┐                                       │
+│               │  ARGILLA REVIEW     │  ◀── Scores visible as metadata;      │
+│               │  (with scores)      │      suggested decisions pre-filled   │
 │               └──────────┬──────────┘                                       │
 │                          ▼                                                  │
 │               ┌─────────────────────┐                                       │
@@ -171,6 +176,45 @@ When choosing between duplicates:
 | 3 | MCP Q&A | Structured but formulaic |
 
 Additional factors: more complete answer > shorter; better citations > missing; more recent > older.
+
+---
+
+## Quality Evaluation
+
+After deduplication, each Q&A pair is scored by an LLM judge before entering Argilla. This enables:
+
+- **Reviewer efficiency** - Sort by confidence, focus human attention on uncertain pairs
+- **Suggested decisions** - Pre-fill "approved" for high-confidence pairs
+- **Future automation** - Once calibrated, high-confidence pairs can bypass human review
+- **Evaluation data** - Build ground truth for comparing RAG systems
+
+### Evaluation Dimensions
+
+| Dimension | What it checks | Score |
+|-----------|----------------|-------|
+| **Faithfulness** | Does every claim in the answer match the source data? | 0.0 - 1.0 |
+| **Relevance** | Does the answer address what was asked? | 0.0 - 1.0 |
+| **Completeness** | Does the answer cover key facts from the source? | 0.0 - 1.0 |
+| **Confidence** | Minimum of the above three scores | 0.0 - 1.0 |
+
+### Suggested Decision Logic
+
+| Confidence | Suggested Decision | Reviewer Action |
+|------------|-------------------|-----------------|
+| ≥ 0.8 | `approved` | Spot-check, can approve quickly |
+| < 0.8 | `needs_review` | Careful review required |
+
+### Cost
+
+Evaluation uses a lightweight LLM (gpt-4o-mini or claude-haiku) at ~$0.18-1.00 per 1000 pairs—roughly 10-25% of the generation cost.
+
+### Calibration
+
+After ~200 human reviews in Argilla, compare:
+- Human decisions vs evaluator's suggested decisions
+- Which dimensions correlate with human rejections
+
+Use this data to tune the confidence threshold and improve prompts. See [ARES](https://github.com/stanford-futuredata/ARES) for formal evaluation framework options.
 
 ---
 

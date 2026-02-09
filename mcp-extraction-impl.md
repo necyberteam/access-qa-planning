@@ -136,7 +136,101 @@ Before pushing to Argilla, check for similar existing records.
 - Reviewer can compare and choose
 - Avoids silent data loss
 
-### 5. Argilla Push
+### 5. Quality Evaluation
+
+Before pushing to Argilla, each Q&A pair is scored by an LLM judge. This enables reviewers to prioritize their work and provides data for future automation.
+
+**Evaluation dimensions:**
+
+| Dimension | What it checks | Score range |
+|-----------|----------------|-------------|
+| Faithfulness | Does every claim in the answer match source_data? | 0.0 - 1.0 |
+| Relevance | Does the answer address the question? | 0.0 - 1.0 |
+| Completeness | Does the answer cover key facts from the source? | 0.0 - 1.0 |
+| Confidence | min(faithfulness, relevance, completeness) | 0.0 - 1.0 |
+
+**LLM for evaluation:** `gpt-4o-mini` or `claude-haiku-3.5`
+
+**Cost:** ~$0.18-1.00 per 1000 pairs (roughly 10-25% of generation cost)
+
+**Evaluator prompt:**
+
+```
+You are evaluating a Q&A pair generated from structured data about HPC resources.
+
+SOURCE DATA:
+{source_data_json}
+
+QUESTION: {question}
+ANSWER: {answer}
+
+Score each dimension 0.0-1.0:
+
+1. FAITHFULNESS: Does every claim in the answer match the source data?
+   - 1.0 = All claims verifiable from source
+   - 0.5 = Some claims not in source but plausible
+   - 0.0 = Contains incorrect or fabricated information
+
+2. RELEVANCE: Does the answer address what was asked?
+   - 1.0 = Directly answers the question
+   - 0.5 = Partially answers or includes irrelevant info
+   - 0.0 = Does not answer the question
+
+3. COMPLETENESS: Does the answer include key facts from the source?
+   - 1.0 = Covers all relevant information
+   - 0.5 = Missing some important details
+   - 0.0 = Severely incomplete
+
+Output JSON:
+{"faithfulness": 0.X, "relevance": 0.X, "completeness": 0.X, "issues": ["issue1", ...]}
+```
+
+**Suggested decision logic:**
+
+| Confidence | Suggested Decision | Meaning |
+|------------|-------------------|---------|
+| ≥ 0.8 | `approved` | High quality, quick review |
+| < 0.8 | `needs_review` | Requires careful human review |
+
+**Implementation:**
+
+```python
+class QAEvaluator:
+    def __init__(self, llm_client: BaseLLMClient):
+        self.llm = llm_client
+
+    def evaluate(self, pair: QAPair) -> QAEvaluation:
+        """Score a Q&A pair against its source_data."""
+        response = self.llm.generate(
+            system=EVALUATOR_SYSTEM_PROMPT,
+            user=format_evaluation_prompt(pair),
+        )
+        scores = parse_evaluation_response(response.text)
+        return QAEvaluation(
+            faithfulness=scores["faithfulness"],
+            relevance=scores["relevance"],
+            completeness=scores["completeness"],
+            confidence=min(scores["faithfulness"], scores["relevance"], scores["completeness"]),
+            issues=scores.get("issues", []),
+            suggested_decision="approved" if confidence >= 0.8 else "needs_review",
+        )
+```
+
+**Phase 1 (current):** All pairs go to Argilla with scores. Humans make final decision.
+
+**Phase 2 (future):** After calibrating with ~200 human reviews, high-confidence pairs can auto-approve and bypass human review. The threshold is tuned based on agreement between evaluator and human decisions.
+
+**Calibration approach:** Compare evaluator's `suggested_decision` against human `review_decision` in Argilla. Track:
+- Precision: Of pairs evaluator marked `approved`, what % did humans approve?
+- Recall: Of pairs humans approved, what % did evaluator mark `approved`?
+- False negatives: Pairs evaluator flagged `needs_review` but humans approved (wastes reviewer time)
+- False positives: Pairs evaluator marked `approved` but humans rejected (quality risk)
+
+Adjust threshold to minimize false positives while keeping false negatives acceptable.
+
+**Related:** [ARES](https://github.com/stanford-futuredata/ARES) - Stanford framework for automated RAG evaluation with Prediction-Powered Inference for statistically rigorous results.
+
+### 6. Argilla Push
 
 Push Q&A pairs to Argilla for human review.
 
@@ -155,7 +249,23 @@ Push Q&A pairs to Argilla for human review.
 | is_duplicate | metadata | Boolean flag if similar record exists |
 | generated_at | metadata | Timestamp |
 
-### 6. CLI
+**Evaluation fields (from Quality Evaluation step):**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| faithfulness_score | float | 0.0-1.0 score from evaluator |
+| relevance_score | float | 0.0-1.0 score from evaluator |
+| completeness_score | float | 0.0-1.0 score from evaluator |
+| confidence_score | float | min(faithfulness, relevance, completeness) |
+| eval_issues | text[] | Issues identified by evaluator |
+| suggested_decision | enum | `approved` or `needs_review` |
+
+These fields enable reviewers to:
+- Sort by confidence (review low-confidence pairs first)
+- Filter by suggested decision
+- See evaluator's reasoning in `eval_issues`
+
+### 7. CLI
 
 Command-line interface for running extraction.
 
@@ -201,6 +311,10 @@ ARGILLA_DATASET=qa-review
 
 # Embedding model (for deduplication)
 EMBEDDING_MODEL=all-MiniLM-L6-v2
+
+# Evaluation (optional - defaults to gpt-4o-mini)
+EVAL_LLM_BACKEND=openai        # or anthropic
+EVAL_LLM_MODEL=gpt-4o-mini     # or claude-haiku-3.5
 ```
 
 ---
@@ -211,22 +325,23 @@ EMBEDDING_MODEL=all-MiniLM-L6-v2
 access-qa-extraction/
 ├── src/access_qa_extraction/
 │   ├── __init__.py
-│   ├── cli.py                 # Click CLI entrypoint
+│   ├── cli.py                 # Typer CLI entrypoint
 │   ├── config.py              # Settings via pydantic-settings
-│   ├── mcp_client.py          # HTTP client for MCP (exists)
-│   ├── models.py              # QAPair, Entity models
-│   ├── fetchers/
+│   ├── mcp_client.py          # HTTP client for MCP
+│   ├── llm_client.py          # LLM abstraction (Anthropic, OpenAI, local)
+│   ├── models.py              # QAPair, QAEvaluation models
+│   ├── extractors/
 │   │   ├── __init__.py
-│   │   ├── base.py            # BaseFetcher abstract class
+│   │   ├── base.py            # BaseExtractor abstract class
 │   │   ├── compute_resources.py
 │   │   ├── software_discovery.py
 │   │   ├── allocations.py
 │   │   ├── nsf_awards.py
 │   │   └── affinity_groups.py
-│   ├── generator.py           # LLM Q&A generation
+│   ├── evaluator.py           # LLM-as-judge quality scoring
 │   ├── deduplication.py       # Embedding + similarity check
 │   ├── change_detection.py    # Hash-based diff
-│   └── argilla_push.py        # Push to Argilla
+│   └── argilla_client.py      # Push to Argilla
 ├── data/
 │   ├── hashes/                # Change detection hashes
 │   └── output/                # Debug output (gitignored)
@@ -239,30 +354,44 @@ access-qa-extraction/
 
 ## Implementation Order
 
-### Phase 1: Core Pipeline (one server)
+### Phase 1: Core Pipeline (one server) ✅
 
-1. **Fetcher for compute-resources** - Fetch all resources, return as list of dicts
-2. **Q&A Generator** - Call OpenAI, parse response, validate citations
-3. **CLI basics** - `qa-extract compute-resources --dry-run`
-4. **Test end-to-end** - Verify Q&A quality manually
+1. **Extractor for compute-resources** - Fetch all resources, generate Q&A via LLM
+2. **CLI basics** - `qa-extract extract compute-resources --dry-run`
+3. **Test end-to-end** - Verify Q&A quality manually
 
-### Phase 2: Argilla Integration
+### Phase 2: Argilla Integration ✅
 
-5. **Argilla push** - Push records to dataset
-6. **Deduplication** - Embed questions, check for similar records
-7. **Change detection** - Hash storage, skip unchanged entities
+4. **Argilla push** - Push records to dataset with embeddings
+5. **Deduplication** - Vector similarity check before insert
+6. **CLI flags** - `--push-to-argilla`, `--no-dedup`
 
-### Phase 3: Remaining Servers
+### Phase 3: Remaining Servers ✅
 
-8. **software-discovery fetcher** - Larger dataset, may need batching
-9. **allocations fetcher**
-10. **nsf-awards fetcher**
-11. **affinity-groups fetcher**
+7. **software-discovery extractor** - Search-terms strategy
+8. **allocations extractor** - Broad-queries strategy
+9. **nsf-awards extractor** - Broad-queries strategy
+10. **affinity-groups extractor** - List-all strategy
 
-### Phase 4: Automation
+### Phase 4: Quality Evaluation ← **CURRENT**
 
-12. **Scheduling** - GitHub Actions or cron for weekly runs
-13. **Monitoring** - Log extraction stats, alert on failures
+11. **QAEvaluator class** - LLM-as-judge scoring (faithfulness, relevance, completeness)
+12. **Evaluation model** - `QAEvaluation` dataclass with scores and issues
+13. **Argilla metadata** - Add evaluation scores and suggested_decision fields
+14. **CLI integration** - Evaluate before push, add `--skip-eval` flag
+15. **Calibration tooling** - Compare evaluator vs human decisions after ~200 reviews
+
+### Phase 5: Automation
+
+16. **Scheduling** - GitHub Actions or cron for weekly runs
+17. **Monitoring** - Log extraction stats, alert on failures
+18. **Change detection** - Hash storage, skip unchanged entities (deferred - regeneration is cheap enough)
+
+### Phase 6: Auto-Approval (Future)
+
+19. **Threshold tuning** - Analyze Phase 4 calibration data
+20. **Auto-approve flow** - High-confidence pairs bypass Argilla, push directly to vector DB
+21. **Audit logging** - Track auto-approved pairs for quality monitoring
 
 ---
 
@@ -313,33 +442,38 @@ Output as JSON array of {question, answer} objects.
 | Error | Handling |
 |-------|----------|
 | MCP server unavailable | Log error, skip server, continue with others |
-| OpenAI rate limit | Exponential backoff, retry up to 3 times |
-| OpenAI returns invalid JSON | Log, retry once with "please output valid JSON" |
+| LLM rate limit | Exponential backoff, retry up to 3 times |
+| LLM returns invalid JSON | Log, retry once with "please output valid JSON" |
 | Argilla push fails | Log error, save to local JSONL for manual retry |
 | Duplicate detection fails | Log warning, push without duplicate flag |
+| Evaluation fails | Log warning, set confidence=0.0 and suggested_decision=`needs_review` |
 
 ---
 
 ## Testing
 
 ### Unit Tests
-- Fetcher parsing (mock MCP responses)
+- Extractor parsing (mock MCP responses)
 - Q&A generator output validation
-- Hash computation determinism
 - Citation marker extraction
+- Evaluator response parsing
 
 ### Integration Tests
 - End-to-end with test MCP server
 - Argilla push to test dataset
+- Evaluation scoring pipeline
 
 ### Manual Validation
 - Review generated Q&A quality
 - Check citation accuracy
 - Verify deduplication works
+- Spot-check evaluator scores against human judgment
 
 ---
 
 ## Success Criteria
+
+### Generation Quality
 
 | Metric | Target |
 |--------|--------|
@@ -348,6 +482,15 @@ Output as JSON array of {question, answer} objects.
 | Invalid JSON from LLM | <5% of calls |
 | Duplicate detection accuracy | >90% |
 | Time to extract compute-resources | <2 minutes |
+
+### Evaluation Quality (after calibration)
+
+| Metric | Target | Notes |
+|--------|--------|-------|
+| Evaluator precision | >90% | Of `suggested: approved`, humans approve 90%+ |
+| Evaluator recall | >80% | Of human-approved, evaluator suggests 80%+ |
+| False positive rate | <5% | Evaluator says approved, human rejects |
+| Evaluation cost | <$1/1000 pairs | Using gpt-4o-mini or haiku |
 
 ---
 
