@@ -467,7 +467,7 @@ The backend must:
 
 1. **Be deployed to `*.access-ci.org`** (e.g., `qa.access-ci.org`) to receive the cookie
 
-2. **Configure CORS** to allow credentialed requests:
+2. **Configure CORS** to allow credentialed requests from ACCESS sites only:
 
 ```python
 from flask_cors import CORS
@@ -476,6 +476,17 @@ CORS(app,
      origins=["https://*.access-ci.org"],
      supports_credentials=True)
 ```
+
+**This is a hard security requirement**, not optional configuration. CORS is the primary defense against browser-based attacks from spoofed hosts:
+
+| Scenario | CORS Behavior |
+|----------|--------------|
+| Request from `support.access-ci.org` | Allowed — origin matches `*.access-ci.org` |
+| Request from `evil.com` with chatbot clone | Blocked — origin doesn't match, browser won't send cookie |
+| Request from `evil.access-ci.org` | Allowed — matches wildcard. Only a risk if attacker controls an ACCESS subdomain |
+| Server-side curl (no browser) | Not blocked by CORS — this is what JWT cookie validation prevents |
+
+The agent should also validate the `Origin` header server-side as defense-in-depth (browsers send this honestly for cross-origin requests).
 
 3. **Validate the session cookie** on every request (with graceful degradation):
 
@@ -708,11 +719,61 @@ def get_signing_secrets() -> list[str]:
 - Vault Agent running alongside Drupal, writing the secret to a file that Drupal reads
 - For sites that can't run Vault Agent, a simple API endpoint on the agent that returns the current signing key (authenticated with a separate service token)
 
+#### Vault Availability & Fallback
+
+Services must handle Vault being temporarily unreachable:
+
+| Scenario | Behavior |
+|----------|----------|
+| Vault reachable | Fetch and cache secrets with TTL (5-10 minutes) |
+| Vault unreachable, cache valid | Use cached secrets — continue normally |
+| Vault unreachable, cache expired | **Fail closed** — reject authenticated operations, allow anonymous Q&A |
+| Vault unreachable on startup | Fail to start — require manual intervention |
+
+```python
+import time
+
+_secret_cache = {"secrets": None, "fetched_at": 0}
+CACHE_TTL = 300  # 5 minutes
+
+def get_signing_secrets() -> list[str]:
+    now = time.time()
+    if _secret_cache["secrets"] and (now - _secret_cache["fetched_at"]) < CACHE_TTL:
+        return _secret_cache["secrets"]
+
+    try:
+        secrets = fetch_from_vault()
+        _secret_cache["secrets"] = secrets
+        _secret_cache["fetched_at"] = now
+        return secrets
+    except VaultUnavailableError:
+        if _secret_cache["secrets"]:
+            # Vault down but cache still warm — use cached secrets
+            return _secret_cache["secrets"]
+        # No cache, no Vault — fail closed
+        raise
+```
+
+**Key principle:** Fail closed for authentication (don't guess), fail open for anonymous Q&A (don't break the chatbot for unauthenticated users just because Vault is down).
+
 ### Token Expiration
 
 - **Recommended lifetime:** 24 hours
 - **Behavior on expiration:** User must re-authenticate on any ACCESS site
 - **No refresh mechanism:** Cookie is re-issued on each site login
+
+### Cookie Expiry Mid-Session
+
+When a JWT cookie expires during an active chatbot session:
+
+| Component | Behavior |
+|-----------|----------|
+| **Agent** | Returns anonymous response (not an error). Includes `auth.authenticated: false` in response. |
+| **Chatbot frontend** | Detects `authenticated: false` in response. If user was previously authenticated, shows a non-blocking prompt: "Your session has expired. [Log in again] to access personalized features." |
+| **Q&A** | Continues working — anonymous mode, no interruption |
+| **Ticket operations** | Blocked — agent returns "Please log in to access ticket features" instead of proceeding with unverified identity |
+
+The user's chat history and session are preserved. Only identity-dependent operations are affected. Re-authenticating on any ACCESS site restores the cookie immediately.
 
 ### Logout Considerations
 

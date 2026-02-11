@@ -123,6 +123,15 @@ X-Acting-User: jsmith@access-ci.org
 - Absent for purely public/anonymous operations
 - Backend MUST validate this is a valid ACCESS ID format
 
+**Trust boundary**: This header is ONLY set by trusted services (the agent or MCP server) after validating the user's identity server-side. It is never passed through from client-supplied values.
+
+| Source | How Identity Is Validated | Who Sets X-Acting-User |
+|--------|--------------------------|----------------------|
+| Direct MCP client (Claude, ChatGPT) | OAuth 2.1 token validated by MCP server | MCP server |
+| Browser QA Bot | JWT cookie validated by agent | Agent |
+
+Backends MUST only accept `X-Acting-User` from authenticated service accounts (validated via `Authorization` header). Any request without a valid service token should be rejected regardless of `X-Acting-User` presence.
+
 ### X-Request-ID Header
 
 ```
@@ -382,7 +391,8 @@ Validation regex:
 
 | Risk | Mitigation |
 |------|------------|
-| Spoofed header | Only accept `X-Acting-User` from authenticated MCP server |
+| Spoofed header from client | `X-Acting-User` is NEVER passed through from clients; always extracted server-side from validated JWT cookie (QA Bot) or OAuth token (direct MCP client) |
+| Spoofed header from unauthorized service | Only accept `X-Acting-User` from requests with a valid service token in the `Authorization` header |
 | Invalid user | Validate `access_id` format; optionally verify user exists |
 | Privilege escalation | Always check permissions in your system, not just presence of header |
 

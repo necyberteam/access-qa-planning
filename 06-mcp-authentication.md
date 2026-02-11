@@ -1,10 +1,12 @@
 # MCP Authentication Architecture (OAuth 2.1)
 
-> **Related**: [Agent Architecture](./01-agent-architecture.md) | [MCP Action Tools](./05-events-actions.md) | [Backend Integration Spec](./07-backend-integration-spec.md) | [Announcements API Spec](./drupal-announcements-api-spec.md)
+> **Related**: [Agent Architecture](./01-agent-architecture.md) | [MCP Action Tools](./05-events-actions.md) | [Backend Integration Spec](./07-backend-integration-spec.md) | [Announcements API Spec](./drupal-announcements-api-spec.md) | [QA Bot Authentication](./08-qa-bot-authentication.md)
 
 ## Overview
 
-This document describes OAuth 2.1 authentication for the ACCESS-CI MCP servers, enabling researchers to connect from Claude, ChatGPT, Copilot, and other MCP-compatible clients.
+This document describes OAuth 2.1 authentication for **direct MCP client connections** — researchers connecting from Claude, ChatGPT, Copilot, and other MCP-compatible clients.
+
+> **Important**: This OAuth flow applies only to direct MCP clients. The browser-based QA Bot uses a different authentication model — a signed JWT cookie scoped to `.access-ci.org`. See [QA Bot Authentication](./08-qa-bot-authentication.md) for that flow. The two authentication paths converge at the same point: the MCP server receives a validated user identity and passes `X-Acting-User` to backend APIs.
 
 The architecture ensures:
 
@@ -13,6 +15,25 @@ The architecture ensures:
 - Standards-compliant OAuth 2.1 flow per MCP specification
 - Single redirect URI simplifies CILogon registration
 - No local installation required for end users
+
+### Two Authentication Paths, One Backend Pattern
+
+```
+Direct MCP Clients (Claude, ChatGPT, etc.)
+  └─→ OAuth 2.1 with CILogon (this document)
+  └─→ MCP server validates token, extracts ACCESS ID
+  └─→ Calls backends with X-Acting-User header
+
+Browser-Based QA Bot
+  └─→ JWT cookie on .access-ci.org (see 08-qa-bot-authentication.md)
+  └─→ Agent validates cookie, extracts ACCESS ID
+  └─→ Calls MCP servers / backends with X-Acting-User header
+
+Both paths result in the same backend call pattern:
+  Authorization: Bearer {service_token}
+  X-Acting-User: {access_id}
+  X-Request-ID: {uuid}
+```
 
 ---
 

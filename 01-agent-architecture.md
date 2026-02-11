@@ -101,28 +101,33 @@ RAG retrieval from verified Q&A pairs provides:
 ```
 ┌─────────────────┐
 │  access-agent   │  LangGraph orchestration (Python)
-│                 │  Query classification → routing → synthesis
+│  (qa.access-    │  Query classification → routing → synthesis
+│   ci.org)       │  JWT cookie validation → user identity
 └────────┬────────┘
          │ HTTP
          ▼
-┌─────────────────┐     ┌─────────────────┐
-│  QA Service     │     │  MCP Servers    │
-│  (FastAPI)      │     │  (TypeScript)   │
-│  pgvector RAG   │     │  10 servers     │
-└────────┬────────┘     └────────┬────────┘
-         │                       │
-         ▼                       ▼
-┌─────────────────┐     ┌─────────────────┐
-│  PostgreSQL     │     │  ACCESS APIs    │
-│  + pgvector     │     │  (live data)    │
-│  + HNSW index   │     │                 │
-└─────────────────┘     └─────────────────┘
+┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
+│  QA Service     │     │  MCP Servers    │     │  JSM MCP Server │
+│  (FastAPI)      │     │  (TypeScript)   │     │  (TypeScript)   │
+│  pgvector RAG   │     │  10 servers     │     │  Ticket ops     │
+└────────┬────────┘     └────────┬────────┘     └────────┬────────┘
+         │                       │                       │
+         ▼                       ▼                       ▼
+┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
+│  PostgreSQL     │     │  ACCESS APIs    │     │  Netlify Proxy  │
+│  + pgvector     │     │  (live data)    │     │  → Atlassian    │
+│  + HNSW index   │     │                 │     │    JSM          │
+└─────────────────┘     └─────────────────┘     └─────────────────┘
          ▲
          │ sync
-┌─────────────────┐
-│    Argilla      │  Human review & curation
-└─────────────────┘
+┌─────────────────┐     ┌─────────────────┐
+│    Argilla      │     │  HashiCorp      │
+│  Human review   │     │  Vault          │
+│  & curation     │     │  Secret mgmt    │
+└─────────────────┘     └─────────────────┘
 ```
+
+> **Authentication**: The agent validates user identity via a signed JWT cookie (`.access-ci.org` domain) for browser-based access, or via OAuth 2.1 for direct MCP clients (Claude, ChatGPT). Both paths result in a validated ACCESS ID passed to backends as `X-Acting-User`. See [QA Bot Authentication](./08-qa-bot-authentication.md) and [MCP Authentication](./06-mcp-authentication.md).
 
 ---
 
@@ -517,6 +522,9 @@ ACCESS already uses CILogon for authentication across its infrastructure. Using 
 | Document | Purpose |
 |----------|---------|
 | [MCP Action Tools](./05-events-actions.md) | Overview of action tools initiative |
-| [MCP Authentication](./06-mcp-authentication.md) | OAuth 2.1 architecture with CILogon |
+| [MCP Authentication](./06-mcp-authentication.md) | OAuth 2.1 for direct MCP clients (Claude, ChatGPT) |
+| [QA Bot Authentication](./08-qa-bot-authentication.md) | JWT cookie auth for browser-based QA Bot |
 | [Backend Integration Spec](./07-backend-integration-spec.md) | Service token + X-Acting-User contract |
 | [Announcements API Spec](./drupal-announcements-api-spec.md) | Drupal developer spec for Phase 1 |
+| [JSM MCP Server Plan](./jsm-mcp-server-plan.md) | Ticket creation/retrieval via agent |
+| [JSM My Tickets API Spec](./jsm-my-tickets-api-spec.md) | Ticket lookup endpoint specification |
