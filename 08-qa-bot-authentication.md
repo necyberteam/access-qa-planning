@@ -551,13 +551,162 @@ def call_mcp_tool(tool_name: str, params: dict, acting_user: str):
 
 ### Shared Secret Management
 
-The JWT signing secret must be:
+All cookie issuers (ACCESS sites) and validators (QA Bot Agent) share a **single** JWT signing secret. This is what makes the cookie portable across `*.access-ci.org` — a cookie issued by `allocations.access-ci.org` can be validated by `qa.access-ci.org` because they share the same secret.
+
+The signing secret must be:
 
 - **Sufficiently random:** Minimum 256 bits of entropy
-- **Securely distributed:** Via secrets manager, not in code repositories
-- **Rotatable:** Plan for secret rotation without breaking active sessions
+- **Securely stored:** In a secrets manager (HashiCorp Vault, AWS Secrets Manager, etc.), not in code repositories or config files
+- **Automatically distributed:** Services fetch from the secrets manager, not manually configured
 
-**Recommendation:** Use a secrets manager (AWS Secrets Manager, HashiCorp Vault, etc.) and inject via environment variable.
+#### Who Needs the Secret
+
+| Service | Role | Needs Secret |
+|---------|------|-------------|
+| ACCESS Drupal sites | Issue cookies | Yes — signs JWTs |
+| Other authenticated ACCESS sites | Issue cookies | Yes — signs JWTs |
+| QA Bot Agent (`qa.access-ci.org`) | Validate cookies | Yes — verifies JWT signatures |
+| MCP servers | N/A — trusts agent via service auth | No |
+| JSM proxy | N/A — trusts agent via API key | No |
+| Dumb hosts (WordPress, static) | N/A — just embeds chatbot widget | No |
+
+#### Secret Rotation
+
+Secret rotation must be automated and coordinated across all services. The 24-hour cookie lifetime provides a natural rotation window.
+
+**Automated rotation process:**
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                    SECRET ROTATION TIMELINE                         │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                     │
+│  T+0:    Secrets manager generates new secret                       │
+│          Both old and new secrets are marked "active"               │
+│                                                                     │
+│  T+0 to T+1h:  Services pick up new secret                         │
+│          - Poll-based: services check secrets manager periodically  │
+│          - Or push-based: webhook/notification triggers restart     │
+│          - Services now accept JWTs signed with EITHER secret       │
+│          - New cookies issued with NEW secret only                  │
+│                                                                     │
+│  T+1h to T+24h: Transition window                                  │
+│          - Old cookies (signed with old secret) still valid         │
+│          - New cookies (signed with new secret) being issued        │
+│          - Both secrets accepted for validation                     │
+│                                                                     │
+│  T+24h:  All old cookies have expired                               │
+│          Old secret retired from secrets manager                    │
+│          Services stop accepting old secret on next poll            │
+│                                                                     │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+**Implementation for multi-secret validation:**
+
+```python
+import jwt
+import os
+import json
+
+def get_signing_secrets() -> list[str]:
+    """Fetch active secrets from secrets manager.
+    Returns list of secrets - first is current (for signing),
+    rest are previous (for validation during rotation).
+    """
+    # Example: secrets manager returns JSON array
+    secrets = json.loads(os.environ["SESSION_SECRETS"])
+    return secrets  # ["new_secret", "old_secret"]
+
+def create_session_cookie(access_id: str) -> str:
+    """Sign with current (first) secret only."""
+    secrets = get_signing_secrets()
+    payload = {
+        "sub": access_id,
+        "iat": int(time.time()),
+        "exp": int(time.time()) + 86400
+    }
+    return jwt.encode(payload, secrets[0], algorithm="HS256")
+
+def get_acting_user(request) -> str | None:
+    """Validate against all active secrets."""
+    cookie = request.cookies.get("accessci_session")
+    if not cookie or cookie == "1":
+        return None
+
+    for secret in get_signing_secrets():
+        try:
+            payload = jwt.decode(cookie, secret, algorithms=["HS256"])
+            return payload["sub"]
+        except jwt.InvalidTokenError:
+            continue
+
+    return None  # No secret could validate — anonymous mode
+```
+
+#### Recommendation: HashiCorp Vault
+
+**Why Vault:**
+
+- Open source, runs as a Docker container alongside the existing stack
+- Native secret versioning — stores current and previous secret versions, exactly what multi-secret rotation needs
+- API-driven — services fetch secrets via HTTP, no SDK lock-in
+- Runs on any infrastructure (Linode, cloud, on-prem) — no vendor lock-in
+- Industry standard for secret management
+
+**Why not Kubernetes:** The current infrastructure is a single Linode running Docker Compose with ~10 services. K8s would add significant operational overhead (multi-node clusters, Helm charts, ingress controllers, K8s knowledge requirements) without meaningful benefit at this scale. Docker Compose with `restart: always` and health checks provides sufficient orchestration. Revisit if the system grows to multiple servers or requires auto-scaling.
+
+**Docker Compose addition:**
+
+```yaml
+vault:
+  image: hashicorp/vault:1.15
+  cap_add:
+    - IPC_LOCK
+  environment:
+    - VAULT_ADDR=http://0.0.0.0:8200
+  volumes:
+    - vault-data:/vault/data
+    - ./vault/config:/vault/config
+  ports:
+    - "8200:8200"
+  command: server
+  restart: always
+```
+
+**How services consume the secret:**
+
+```python
+import hvac  # Vault Python client
+
+vault = hvac.Client(url="http://vault:8200", token=os.environ["VAULT_TOKEN"])
+
+def get_signing_secrets() -> list[str]:
+    """Fetch current + previous secret versions from Vault."""
+    secret = vault.secrets.kv.v2.read_secret_version(
+        path="accessci/session-signing",
+        mount_point="secret"
+    )
+    current = secret["data"]["data"]["key"]
+
+    # Also fetch previous version for rotation window
+    try:
+        previous = vault.secrets.kv.v2.read_secret_version(
+            path="accessci/session-signing",
+            version=secret["data"]["metadata"]["version"] - 1,
+            mount_point="secret"
+        )
+        return [current, previous["data"]["data"]["key"]]
+    except Exception:
+        return [current]
+```
+
+**Rotation automation:** A cron job (or Vault's own rotation policies) generates a new secret on schedule (e.g., every 30 days). Writing a new version to Vault's KV v2 engine automatically preserves the previous version. Services polling Vault pick up both versions and accept JWTs signed with either. After 24 hours, all cookies signed with the old secret have expired.
+
+**Distributing to ACCESS sites (Drupal):** The Drupal sites that issue cookies also need the current signing secret. Options:
+- Drupal module that polls Vault on a cron schedule
+- Vault Agent running alongside Drupal, writing the secret to a file that Drupal reads
+- For sites that can't run Vault Agent, a simple API endpoint on the agent that returns the current signing key (authenticated with a separate service token)
 
 ### Token Expiration
 

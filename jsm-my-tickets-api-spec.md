@@ -25,7 +25,7 @@ Retrieve tickets owned by or participated in by a specific user.
 | `X-User-Email` | Yes | Email address of the user (from Drupal) |
 | `X-Acting-User` | Yes | ACCESS ID of the user (from Drupal) |
 
-Both headers are required for dual verification - see [User Identity & Privacy](./jsm-mcp-server-plan.md#user-identity--privacy).
+Both headers are required for dual verification - see [User Identity & Privacy](./jsm-mcp-server-plan.md#user-identity--privacy). These values are extracted server-side by the agent from a validated JWT cookie — they are never supplied by the client. See [Threat Model](./jsm-mcp-server-plan.md#threat-model) for security analysis.
 
 #### Query Parameters
 
@@ -173,6 +173,7 @@ Map Atlassian fields to our simplified format:
 
 ### 3. Security Considerations
 
+- **JWT cookie auth required** — ticket reading must not be enabled until the cookie authentication flow is implemented (see [Prerequisites](./jsm-mcp-server-plan.md#prerequisites))
 - Validate email format to prevent JQL injection
 - Rate limit requests per user
 - Log access for audit trail

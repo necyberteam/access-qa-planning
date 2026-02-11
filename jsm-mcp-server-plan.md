@@ -78,26 +78,82 @@ JSM identifies users by email address, but MCP authentication uses ACCESS ID (CI
 | MCP / CILogon | ACCESS ID | `jsmith@access-ci.org` |
 | JSM / Atlassian | Email | `john.smith@university.edu` |
 
-### Solution: Dual Verification
+Additionally, the chatbot is a frontend component that could be embedded on any site — or a spoofed host. User identity passed as props from the client cannot be trusted.
 
-Both ACCESS ID and email are already available from the authentication flow (passed to qa-bot-core). The MCP server sends both to the proxy, which verifies both match on JSM tickets:
+### Solution: JWT Cookie + Dual Verification
+
+Identity is established through a signed JWT cookie scoped to `.access-ci.org`, not through client-supplied props. The agent extracts the user's ACCESS ID from the validated cookie, then passes both ACCESS ID and email to the JSM proxy for dual verification.
+
+See [08-qa-bot-authentication.md](./08-qa-bot-authentication.md) for the full cookie specification.
+
+#### Trust Chain
+
+```
+┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
+│  User logs in   │────▶│  ACCESS site     │────▶│  JWT cookie set │────▶│  Cookie travels  │
+│  via CILogon    │     │  (any *.access-  │     │  on .access-    │     │  to all *.access- │
+│                 │     │   ci.org)        │     │   ci.org        │     │   ci.org sites   │
+└─────────────────┘     └─────────────────┘     └─────────────────┘     └─────────────────┘
+                                                                               │
+                                                                               ▼
+┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
+│  Atlassian JSM  │◀────│  Netlify Proxy   │◀────│  Agent validates│◀────│  Browser sends   │
+│  (dual filter)  │     │  (dual headers)  │     │  JWT, extracts  │     │  cookie with     │
+│                 │     │                  │     │  ACCESS ID      │     │  chatbot request │
+└─────────────────┘     └─────────────────┘     └─────────────────┘     └─────────────────┘
+```
+
+#### Headers Sent to Proxy
 
 | Header | Source | Purpose |
 |--------|--------|---------|
-| `X-Acting-User` | Drupal (from CILogon/COmanage/Allocations API) | Audit trail, JSM ACCESS ID field match |
-| `X-User-Email` | Drupal user profile | JSM reporter match |
+| `X-Acting-User` | Agent (extracted from validated JWT cookie) | Audit trail, JSM ACCESS ID field match |
+| `X-User-Email` | Agent (from user profile lookup using ACCESS ID) | JSM reporter match |
 
-Proxy queries JSM with dual filter - only tickets where **both** ACCESS ID field and reporter email match are returned.
+#### Why This Is Secure
 
-### Why This Is Secure
+- **Identity comes from a signed cookie, not client props** — a spoofed host on a different domain won't have the cookie, and can't forge it without the signing secret
+- **Agent validates the JWT server-side** — the client never sends `X-Acting-User`; the agent extracts it from the cookie
+- **CORS restricts browser requests** — agent only accepts requests from `*.access-ci.org` origins
+- **Both identifiers must match** on JSM tickets for read operations
+- **Tickets without ACCESS ID are ignored** — prevents access to legacy tickets that can't be verified
 
-- **Neither value comes from user input** - both come from Drupal based on the authenticated session
-- **Both must match** - can't query tickets with just one identifier
-- **Tickets without ACCESS ID are ignored** - prevents access to legacy tickets that can't be verified
+#### Dumb Hosts (WordPress, static sites, etc.)
+
+Some ACCESS sites don't have their own authentication integration. The chatbot still works on these sites because:
+
+1. The JWT cookie is scoped to `.access-ci.org` — if the user logged in on *any* ACCESS site, the cookie is already present
+2. The dumb host doesn't need to know anything about auth — it just embeds the chatbot widget
+3. The browser automatically sends the cookie with chatbot requests to the agent at `qa.access-ci.org`
+4. The agent validates the cookie and determines identity server-side
+
+If the user has never logged into any ACCESS site, the agent sees no cookie and operates in anonymous mode. The chatbot prompts: "Log in to ACCESS to use this feature" and links to an ACCESS site with CILogon integration.
 
 ### Tradeoff
 
 Tickets created before ACCESS ID was captured won't be returned. Security is prioritized over completeness.
+
+### Verification Approaches Considered
+
+Several approaches for verifying JSM account ownership were evaluated:
+
+| Approach | Description | Decision |
+|----------|-------------|----------|
+| **Dual field matching** | Match ACCESS ID + email on JSM tickets | **Adopted** — sufficient for the threat model when combined with cookie auth |
+| **Atlassian OAuth** | User authenticates with Atlassian to prove JSM account ownership, store `accountId` in Drupal profile | **Rejected** — adds friction (second login), doesn't work for users who haven't opened a ticket yet (no JSM account to authenticate against), and over-engineers the solution |
+| **"Bank verification"** | Place a code in a ticket comment, user reads it back to prove access | **Rejected** — high friction, complex implementation, poor UX |
+| **JSM customer verification API** | Check if email exists as a JSM customer | **Rejected** — no stronger than email matching, doesn't prove ownership |
+
+#### Why Atlassian OAuth Was Rejected
+
+While OAuth would provide the strongest proof of JSM account ownership, it creates a chicken-and-egg problem:
+
+1. User asks to see their tickets
+2. System requires Atlassian OAuth to verify account
+3. But if the user has never opened a ticket, they have no JSM customer account to OAuth against
+4. First ticket creation would "bootstrap" their JSM identity, but then they'd immediately need to OAuth to see the ticket they just created
+
+The dual verification approach avoids this entirely — ticket creation works without any JSM account (the proxy creates the customer record), and ticket reading uses the same ACCESS ID + email that was set during creation.
 
 ## Netlify Proxy API Contract
 
@@ -454,10 +510,59 @@ mcp-jsm:
 - [ ] Error handling provides useful feedback to users
 - [ ] No credentials exposed in MCP server
 
+## Threat Model
+
+### Attack Surfaces
+
+| Attack Vector | Ticket Creation | Ticket Reading | Mitigation |
+|---------------|----------------|----------------|------------|
+| **Spoofed host (browser)** | Can't reach agent — CORS blocks requests from non-`*.access-ci.org` origins | Same | CORS + origin validation |
+| **Spoofed host (server-side curl)** | Can't forge JWT cookie without signing secret | Same | JWT signature verification |
+| **XSS on a real ACCESS site** | Could create tickets as the victim (using their own cookie) | Could read the victim's tickets | Standard XSS mitigations; blast radius limited to the compromised user's own identity |
+| **Impersonation via fake email/ACCESS ID** | Not possible — agent extracts identity from JWT, ignores client-supplied values | Same | Cookie-based identity, not prop-based |
+| **Compromised JWT signing secret** | Full impersonation possible | Full impersonation possible | Secrets manager, rotation plan, minimum 256-bit entropy |
+| **Replay attack (stolen cookie)** | Could act as user until cookie expires | Same | Cookie expiration (24h), `HttpOnly`/`Secure` flags |
+
+### Ticket Creation: No New Attack Surface
+
+JSM's own customer portal and web forms don't verify that the person submitting a ticket is who they claim to be — users can type any email and name into the form. The chatbot flow is actually **more secure** than the existing form-based flow because:
+
+1. **Identity comes from a validated JWT** — the user can't claim to be someone else
+2. **Agent sets the reporter fields** — the user never provides their own email/name for ticket creation
+3. **ACCESS ID is set automatically** — enables dual verification for later ticket lookup
+
+An attacker without a valid JWT cookie cannot create tickets through the chatbot at all (anonymous mode blocks ticket operations). With the current web forms, anyone can submit a ticket as anyone.
+
+### Ticket Reading: New Surface, Properly Gated
+
+Ticket reading is a new capability that doesn't exist in the current web forms. This is where the security model matters most:
+
+1. **JWT cookie required** — no cookie means no ticket access
+2. **Agent extracts ACCESS ID from cookie** — can't request another user's tickets
+3. **Dual verification at proxy** — ACCESS ID + email must both match on the JSM ticket
+4. **Legacy tickets excluded** — tickets without ACCESS ID field are never returned
+
+### Residual Risks
+
+| Risk | Likelihood | Impact | Acceptance |
+|------|-----------|--------|------------|
+| JWT signing secret compromise | Low (secrets manager) | High (full impersonation) | Accepted with rotation plan |
+| XSS on ACCESS site | Low (standard web risk) | Medium (single user's data) | Accepted — standard web security applies, not specific to chatbot |
+| ACCESS ID + email guessing | Low (need valid JWT) | N/A (blocked by cookie) | N/A — dual verification is defense-in-depth, not primary gate |
+
+## Prerequisites
+
+Before ticket reading is enabled:
+
+- [ ] **JWT cookie implementation** — ACCESS sites issue signed JWT cookies on `.access-ci.org` (see [08-qa-bot-authentication.md](./08-qa-bot-authentication.md))
+- [ ] **Agent cookie validation** — Agent extracts ACCESS ID from validated JWT, not from client props
+- [ ] **CORS configuration** — Agent only accepts requests from `*.access-ci.org` origins
+- [ ] **Agent deployed to `*.access-ci.org`** — Required to receive the domain-scoped cookie
+
+Ticket creation can proceed before these are complete (lower risk — worst case is spam tickets). Ticket reading should wait until the cookie auth is in place to prevent unauthorized access to ticket data.
+
 ## Open Questions
 
 1. **Rate limiting** - Should we add rate limiting to prevent accidental ticket spam? (Probably not for v1, monitor usage)
 
 2. **Attachments** - The proxy supports file attachments but MCP doesn't handle binary well. Skip for v1?
-
-3. **Ticket lookup** - Should users be able to check status of their tickets? (Future enhancement)
