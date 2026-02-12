@@ -338,38 +338,58 @@ The frontend trusts the parent app's `isLoggedIn` prop for UI purposes, but the 
 
 ### Cookie Structure
 
-The session cookie contains a signed JWT with the user's ACCESS ID:
+The identity cookie (`SESSaccess_auth`) contains a signed JWT with the user's ACCESS ID:
 
 ```
-accessci_session=<signed-jwt>
+SESSaccess_auth=<signed-jwt>
 ```
+
+See [drupal-jwt-cookie-spec.md](./drupal-jwt-cookie-spec.md) for complete implementation details.
+
+### JWT Header
+
+```json
+{
+  "alg": "ES256",
+  "typ": "JWT",
+  "kid": "a1b2c3d4e5f67890"
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| `alg` | ES256 (ECDSA P-256 + SHA-256) |
+| `kid` | Key ID — used by agent to select the correct public key from the issuer's JWKS endpoint |
 
 ### JWT Payload
 
 ```json
 {
+  "iss": "https://support.access-ci.org",
   "sub": "jsmith@access-ci.org",
   "iat": 1707000000,
-  "exp": 1707086400
+  "exp": 1707064800
 }
 ```
 
 | Claim | Description |
 |-------|-------------|
-| `sub` | ACCESS ID (from CILogon eppn claim) |
+| `iss` | Issuer URL — identifies which site signed this JWT |
+| `sub` | ACCESS ID (from CILogon eppn claim, e.g. `jsmith@access-ci.org`) |
 | `iat` | Issued at timestamp (Unix epoch) |
-| `exp` | Expiration timestamp (recommended: 24 hours after issuance) |
+| `exp` | Expiration timestamp (18h after `iat`) |
 
 ### JWT Signature
 
-- **Algorithm:** HS256 (HMAC-SHA256)
-- **Secret:** Shared secret distributed to all ACCESS sites and QA Bot Agent
+- **Algorithm:** ES256 (ECDSA using P-256 curve and SHA-256)
+- **Key:** Site-specific EC P-256 private key (each issuer has its own)
+- **Verification:** Agent fetches public key from issuer's `/.well-known/jwks.json` endpoint
 - **Validation:** Backend MUST verify signature before trusting claims
 
 ### Cookie Attributes
 
 ```
-Set-Cookie: accessci_session=<jwt>;
+Set-Cookie: SESSaccess_auth=<jwt>;
   Domain=.access-ci.org;
   Path=/;
   HttpOnly;
@@ -384,6 +404,12 @@ Set-Cookie: accessci_session=<jwt>;
 | `HttpOnly` | `true` | Prevents JavaScript access (XSS protection) |
 | `Secure` | `true` | HTTPS only |
 | `SameSite` | `None` | Required for cross-subdomain AJAX requests |
+
+### Expiration Behavior
+
+The `SESSaccess_auth` cookie uses **rolling expiration**: it is re-issued on every authenticated response, so the 18-hour window resets with each page load. The cookie only expires after 18 hours of *inactivity*.
+
+This differs from `SESSaccesscisso` (fixed expiration set once at login) — see [drupal-jwt-cookie-spec.md § Rolling vs. Fixed Expiration](./drupal-jwt-cookie-spec.md#rolling-vs-fixed-expiration) for the rationale.
 
 ### SameSite Explanation
 
@@ -409,27 +435,42 @@ When QA Bot on `allocations.access-ci.org` makes AJAX requests to `qa.access-ci.
 
 Each ACCESS site that authenticates users must:
 
-1. **After CILogon authentication**, create a signed JWT:
+1. **Generate an EC P-256 key pair** for the site:
+
+```bash
+openssl ecparam -name prime256v1 -genkey -noout -out private.pem
+openssl ec -in private.pem -pubout -out public.pem
+```
+
+2. **After CILogon authentication**, create a signed JWT:
 
 ```python
 import jwt
 import time
 
-def create_session_cookie(access_id: str, secret: str) -> str:
+# Load once at startup
+with open("private.pem", "rb") as f:
+    PRIVATE_KEY = f.read()
+
+ISSUER = "https://mysite.access-ci.org"  # unique per site
+
+def create_session_cookie(access_id: str) -> str:
     payload = {
+        "iss": ISSUER,
         "sub": access_id,  # e.g., "jsmith@access-ci.org"
         "iat": int(time.time()),
-        "exp": int(time.time()) + 86400  # 24 hours
+        "exp": int(time.time()) + 64800  # 18 hours
     }
-    return jwt.encode(payload, secret, algorithm="HS256")
+    return jwt.encode(payload, PRIVATE_KEY, algorithm="ES256",
+                      headers={"kid": KID})
 ```
 
-2. **Set the cookie** with proper attributes:
+3. **Set the cookie** with proper attributes:
 
 ```python
 response.set_cookie(
-    "accessci_session",
-    value=create_session_cookie(user.access_id, SHARED_SECRET),
+    "SESSaccess_auth",
+    value=create_session_cookie(user.access_id),
     domain=".access-ci.org",
     path="/",
     httponly=True,
@@ -438,7 +479,11 @@ response.set_cookie(
 )
 ```
 
-3. **Store the shared signing secret** securely (environment variable, secrets manager)
+> **Note:** For Drupal sites on Pantheon, this is handled by the `AccessAuthCookieSubscriber` event subscriber — see [drupal-jwt-cookie-spec.md](./drupal-jwt-cookie-spec.md).
+
+4. **Publish the public key** at `/.well-known/jwks.json` so the agent can verify tokens (see [JWKS Discovery](#jwks-discovery))
+
+5. **Store the private key** securely — as a platform environment variable (`ACCESS_JWT_PRIVATE_KEY`) or a file on the server. The private key never leaves the issuing site.
 
 ### QA Bot Frontend (`qa-bot-core`)
 
@@ -492,8 +537,20 @@ The agent should also validate the `Origin` header server-side as defense-in-dep
 
 ```python
 import jwt
+from jwt import PyJWKClient
 
-SHARED_SECRET = os.environ["SESSION_SECRET"]
+# Configure trusted JWKS endpoints — one per issuing site.
+# The agent fetches public keys from these endpoints to verify tokens.
+TRUSTED_ISSUERS = {
+    "https://support.access-ci.org": PyJWKClient(
+        "https://support.access-ci.org/.well-known/jwks.json",
+        cache_keys=True,
+    ),
+    "https://allocations.access-ci.org": PyJWKClient(
+        "https://allocations.access-ci.org/.well-known/jwks.json",
+        cache_keys=True,
+    ),
+}
 
 def get_acting_user(request) -> str | None:
     """Extract and validate ActingUser from session cookie.
@@ -501,7 +558,7 @@ def get_acting_user(request) -> str | None:
     Returns None if cookie is missing, invalid, or expired.
     This is NOT an error condition - it means anonymous mode.
     """
-    cookie = request.cookies.get("accessci_session")
+    cookie = request.cookies.get("SESSaccess_auth")
     if not cookie:
         return None
 
@@ -510,10 +567,24 @@ def get_acting_user(request) -> str | None:
         return None
 
     try:
+        # Decode header to get kid and iss without verifying signature.
+        unverified = jwt.decode(cookie, options={"verify_signature": False})
+        issuer = unverified.get("iss")
+
+        # Look up the JWKS client for this issuer.
+        jwks_client = TRUSTED_ISSUERS.get(issuer)
+        if not jwks_client:
+            return None  # Unknown issuer — treat as anonymous
+
+        # Fetch the public key matching the kid in the JWT header.
+        signing_key = jwks_client.get_signing_key_from_jwt(cookie)
+
+        # Verify signature, expiration, and issuer.
         payload = jwt.decode(
             cookie,
-            SHARED_SECRET,
-            algorithms=["HS256"]
+            signing_key.key,
+            algorithms=["ES256"],
+            issuer=list(TRUSTED_ISSUERS.keys()),
         )
         return payload["sub"]  # ACCESS ID
     except jwt.ExpiredSignatureError:
@@ -560,207 +631,83 @@ def call_mcp_tool(tool_name: str, params: dict, acting_user: str):
 
 ## Security Considerations
 
-### Shared Secret Management
+### Asymmetric Key Management (ES256 + JWKS)
 
-All cookie issuers (ACCESS sites) and validators (QA Bot Agent) share a **single** JWT signing secret. This is what makes the cookie portable across `*.access-ci.org` — a cookie issued by `allocations.access-ci.org` can be validated by `qa.access-ci.org` because they share the same secret.
+JWTs are signed with **ES256** (ECDSA P-256) using asymmetric key pairs. Each issuing site holds its own private key. The agent validates tokens using public keys fetched from each site's JWKS endpoint. **No shared secret exists.**
 
-The signing secret must be:
+This approach is recommended by NIST SP 800-63C, RFC 8725, and OWASP for multi-issuer JWT architectures. See [drupal-jwt-cookie-spec.md § Why Asymmetric](./drupal-jwt-cookie-spec.md#why-asymmetric-es256-instead-of-shared-secret-hs256) for the full comparison.
 
-- **Sufficiently random:** Minimum 256 bits of entropy
-- **Securely stored:** In a secrets manager (HashiCorp Vault, AWS Secrets Manager, etc.), not in code repositories or config files
-- **Automatically distributed:** Services fetch from the secrets manager, not manually configured
+#### Who Needs What
 
-#### Who Needs the Secret
+| Service | Role | Has Private Key | Has Public Key |
+|---------|------|----------------|----------------|
+| ACCESS Drupal sites | Issue cookies | Yes (their own) | Published at JWKS endpoint |
+| Other authenticated ACCESS sites (Django, etc.) | Issue cookies | Yes (their own) | Published at JWKS endpoint |
+| QA Bot Agent (`qa.access-ci.org`) | Validate cookies | No | Fetches from JWKS endpoints |
+| MCP servers | N/A — trusts agent via service auth | No | No |
+| JSM proxy | N/A — trusts agent via API key | No | No |
+| Dumb hosts (WordPress, static) | N/A — just embeds chatbot widget | No | No |
 
-| Service | Role | Needs Secret |
-|---------|------|-------------|
-| ACCESS Drupal sites | Issue cookies | Yes — signs JWTs |
-| Other authenticated ACCESS sites | Issue cookies | Yes — signs JWTs |
-| QA Bot Agent (`qa.access-ci.org`) | Validate cookies | Yes — verifies JWT signatures |
-| MCP servers | N/A — trusts agent via service auth | No |
-| JSM proxy | N/A — trusts agent via API key | No |
-| Dumb hosts (WordPress, static) | N/A — just embeds chatbot widget | No |
+#### JWKS Discovery
 
-#### Secret Rotation
+Each issuing site publishes its public key at `/.well-known/jwks.json`. The agent is configured with a list of trusted issuer URLs and fetches their JWKS endpoints to build a key set for verification.
 
-Secret rotation must be automated and coordinated across all services. The 24-hour cookie lifetime provides a natural rotation window.
+```python
+# Agent configuration — trusted issuers
+TRUSTED_ISSUERS = {
+    "https://support.access-ci.org": "https://support.access-ci.org/.well-known/jwks.json",
+    "https://allocations.access-ci.org": "https://allocations.access-ci.org/.well-known/jwks.json",
+}
+```
 
-**Automated rotation process:**
+Adding a new issuing site requires only adding its URL to the agent's trusted issuers list and redeploying the agent.
+
+#### Key Rotation
+
+Rotation is per-site, requires no cross-team coordination, and has zero downtime:
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
-│                    SECRET ROTATION TIMELINE                         │
+│                    KEY ROTATION TIMELINE (per site)                  │
 ├─────────────────────────────────────────────────────────────────────┤
 │                                                                     │
-│  T+0:    Secrets manager generates new secret                       │
-│          Both old and new secrets are marked "active"               │
+│  T+0:    Generate new EC key pair                                   │
+│          Add new public key to /.well-known/jwks.json               │
+│          (keep old public key in JWKS — both are now listed)        │
 │                                                                     │
-│  T+0 to T+1h:  Services pick up new secret                         │
-│          - Poll-based: services check secrets manager periodically  │
-│          - Or push-based: webhook/notification triggers restart     │
-│          - Services now accept JWTs signed with EITHER secret       │
-│          - New cookies issued with NEW secret only                  │
+│  T+0:    Update ACCESS_JWT_PRIVATE_KEY to new private key           │
+│          New cookies signed with new key                            │
+│          Old cookies (signed with old key) still valid              │
+│          Agent fetches JWKS, sees both keys, can verify either      │
 │                                                                     │
-│  T+1h to T+24h: Transition window                                  │
-│          - Old cookies (signed with old secret) still valid         │
-│          - New cookies (signed with new secret) being issued        │
-│          - Both secrets accepted for validation                     │
-│                                                                     │
-│  T+24h:  All old cookies have expired                               │
-│          Old secret retired from secrets manager                    │
-│          Services stop accepting old secret on next poll            │
+│  T+18h:  All old cookies have expired                               │
+│          Remove old public key from /.well-known/jwks.json          │
 │                                                                     │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
-**Implementation for multi-secret validation:**
+**Key advantages over shared-secret rotation:**
+- No coordination between teams — each site rotates on its own schedule
+- No dual-secret validation window logic in the agent — JWKS handles it naturally via `kid` matching
+- Compromise of one site's private key does not affect any other site
 
-```python
-import jwt
-import os
-import json
+#### JWKS Endpoint Availability
 
-def get_signing_secrets() -> list[str]:
-    """Fetch active secrets from secrets manager.
-    Returns list of secrets - first is current (for signing),
-    rest are previous (for validation during rotation).
-    """
-    # Example: secrets manager returns JSON array
-    secrets = json.loads(os.environ["SESSION_SECRETS"])
-    return secrets  # ["new_secret", "old_secret"]
-
-def create_session_cookie(access_id: str) -> str:
-    """Sign with current (first) secret only."""
-    secrets = get_signing_secrets()
-    payload = {
-        "sub": access_id,
-        "iat": int(time.time()),
-        "exp": int(time.time()) + 86400
-    }
-    return jwt.encode(payload, secrets[0], algorithm="HS256")
-
-def get_acting_user(request) -> str | None:
-    """Validate against all active secrets."""
-    cookie = request.cookies.get("accessci_session")
-    if not cookie or cookie == "1":
-        return None
-
-    for secret in get_signing_secrets():
-        try:
-            payload = jwt.decode(cookie, secret, algorithms=["HS256"])
-            return payload["sub"]
-        except jwt.InvalidTokenError:
-            continue
-
-    return None  # No secret could validate — anonymous mode
-```
-
-#### Recommendation: HashiCorp Vault
-
-**Why Vault:**
-
-- Open source, runs as a Docker container alongside the existing stack
-- Native secret versioning — stores current and previous secret versions, exactly what multi-secret rotation needs
-- API-driven — services fetch secrets via HTTP, no SDK lock-in
-- Runs on any infrastructure (Linode, cloud, on-prem) — no vendor lock-in
-- Industry standard for secret management
-
-**Why not Kubernetes:** The current infrastructure is a single Linode running Docker Compose with ~10 services. K8s would add significant operational overhead (multi-node clusters, Helm charts, ingress controllers, K8s knowledge requirements) without meaningful benefit at this scale. Docker Compose with `restart: always` and health checks provides sufficient orchestration. Revisit if the system grows to multiple servers or requires auto-scaling.
-
-**Docker Compose addition:**
-
-```yaml
-vault:
-  image: hashicorp/vault:1.15
-  cap_add:
-    - IPC_LOCK
-  environment:
-    - VAULT_ADDR=http://0.0.0.0:8200
-  volumes:
-    - vault-data:/vault/data
-    - ./vault/config:/vault/config
-  ports:
-    - "8200:8200"
-  command: server
-  restart: always
-```
-
-**How services consume the secret:**
-
-```python
-import hvac  # Vault Python client
-
-vault = hvac.Client(url="http://vault:8200", token=os.environ["VAULT_TOKEN"])
-
-def get_signing_secrets() -> list[str]:
-    """Fetch current + previous secret versions from Vault."""
-    secret = vault.secrets.kv.v2.read_secret_version(
-        path="accessci/session-signing",
-        mount_point="secret"
-    )
-    current = secret["data"]["data"]["key"]
-
-    # Also fetch previous version for rotation window
-    try:
-        previous = vault.secrets.kv.v2.read_secret_version(
-            path="accessci/session-signing",
-            version=secret["data"]["metadata"]["version"] - 1,
-            mount_point="secret"
-        )
-        return [current, previous["data"]["data"]["key"]]
-    except Exception:
-        return [current]
-```
-
-**Rotation automation:** A cron job (or Vault's own rotation policies) generates a new secret on schedule (e.g., every 30 days). Writing a new version to Vault's KV v2 engine automatically preserves the previous version. Services polling Vault pick up both versions and accept JWTs signed with either. After 24 hours, all cookies signed with the old secret have expired.
-
-**Distributing to ACCESS sites (Drupal):** The Drupal sites that issue cookies also need the current signing secret. Options:
-- Drupal module that polls Vault on a cron schedule
-- Vault Agent running alongside Drupal, writing the secret to a file that Drupal reads
-- For sites that can't run Vault Agent, a simple API endpoint on the agent that returns the current signing key (authenticated with a separate service token)
-
-#### Vault Availability & Fallback
-
-Services must handle Vault being temporarily unreachable:
+If a site's JWKS endpoint is temporarily unreachable, the agent uses cached public keys:
 
 | Scenario | Behavior |
 |----------|----------|
-| Vault reachable | Fetch and cache secrets with TTL (5-10 minutes) |
-| Vault unreachable, cache valid | Use cached secrets — continue normally |
-| Vault unreachable, cache expired | **Fail closed** — reject authenticated operations, allow anonymous Q&A |
-| Vault unreachable on startup | Fail to start — require manual intervention |
+| JWKS reachable | Fetch and cache public keys (PyJWKClient handles caching automatically) |
+| JWKS unreachable, cache valid | Use cached keys — continue normally |
+| JWKS unreachable, no cache | Cannot verify tokens from that issuer — treat as anonymous |
 
-```python
-import time
-
-_secret_cache = {"secrets": None, "fetched_at": 0}
-CACHE_TTL = 300  # 5 minutes
-
-def get_signing_secrets() -> list[str]:
-    now = time.time()
-    if _secret_cache["secrets"] and (now - _secret_cache["fetched_at"]) < CACHE_TTL:
-        return _secret_cache["secrets"]
-
-    try:
-        secrets = fetch_from_vault()
-        _secret_cache["secrets"] = secrets
-        _secret_cache["fetched_at"] = now
-        return secrets
-    except VaultUnavailableError:
-        if _secret_cache["secrets"]:
-            # Vault down but cache still warm — use cached secrets
-            return _secret_cache["secrets"]
-        # No cache, no Vault — fail closed
-        raise
-```
-
-**Key principle:** Fail closed for authentication (don't guess), fail open for anonymous Q&A (don't break the chatbot for unauthenticated users just because Vault is down).
+**Key principle:** Fail closed for authentication (don't guess), fail open for anonymous Q&A (don't break the chatbot for unauthenticated users just because a JWKS endpoint is down).
 
 ### Token Expiration
 
-- **Recommended lifetime:** 24 hours
-- **Behavior on expiration:** User must re-authenticate on any ACCESS site
-- **No refresh mechanism:** Cookie is re-issued on each site login
+- **Lifetime:** 18 hours (from `drupal_seamless_cilogon.seamless_cookie_expiration` Drupal state)
+- **Expiration type:** Rolling — cookie is re-issued on every authenticated response, so it only expires after 18 hours of inactivity
+- **Behavior on expiration:** Agent treats user as anonymous (graceful degradation, not an error)
 
 ### Cookie Expiry Mid-Session
 
@@ -819,47 +766,53 @@ For read-only QA queries, CSRF risk is lower, but write operations (if any) shou
    - Set up SSL certificate
    - Configure CORS for credentialed requests
 
-2. **Generate and distribute shared secret**
-   - Generate cryptographically secure secret
-   - Add to secrets manager
-   - Distribute to all ACCESS sites and QA Bot Agent
+2. **Generate key pairs for each issuing site**
+   - Generate EC P-256 key pair per site (`openssl ecparam -name prime256v1 -genkey -noout`)
+   - Store private key as platform environment variable
+   - Publish public key at `/.well-known/jwks.json`
 
 3. **Update ACCESS sites to issue JWT cookies**
    - Modify authentication handlers
-   - Change cookie value from `1` to signed JWT
+   - Change cookie value from `1` to ES256-signed JWT
    - Update `SameSite` from `Lax` to `None`
+   - Add `iss` claim and `kid` header
+   - See [drupal-jwt-cookie-spec.md](./drupal-jwt-cookie-spec.md) for implementation details
 
-4. **Update QA Bot frontend**
-   - Add `credentials: 'include'` to fetch calls
-   - Remove any client-side ActingUser headers
+4. **Update QA Bot frontend** --- DONE
+   - [x] Add `credentials: 'include'` to fetch calls
+   - [x] Remove client-side `X-Acting-User` header and `acting_user` body field
+   - [x] Deprecate `actingUser` prop (retained for backward compat)
 
-5. **Update QA Bot Agent**
-   - Add JWT validation logic
-   - Extract ActingUser from validated token
-   - Pass to downstream services
+5. **Update QA Bot Agent** --- DONE
+   - [x] Add JWT validation logic (`src/auth.py`)
+   - [x] Extract ActingUser from validated cookie with body fallback
+   - [x] Tighten CORS defaults for production
+   - [x] Add `PyJWT[crypto]` dependency (replaces `hvac`)
+   - [x] Unit tests for auth module (13 tests including algorithm confusion attack)
+   - [x] E2E tests through FastAPI (9 tests covering cookie/body/fallback flows)
+   - [x] Switch from HS256 to ES256 validation with JWKS discovery (`PyJWKClient`)
+   - [x] Configure trusted issuer JWKS URLs (`TRUSTED_JWKS_URLS` env var)
+   - [x] Remove Vault dependency (deleted `src/vault.py`, `hvac`, `scripts/vault-init.sh`)
+   - [x] Verify `issuer=` parameter passed to `jwt.decode()` so `iss` is validated (not only used for key lookup)
 
 ### Rollback Plan
 
-If issues arise:
+If issues arise during the ES256 migration:
 
-1. Sites can revert to `SameSite=Lax` and cookie value `1`
-2. QA Bot Agent can fall back to anonymous mode
-3. Changes are independent per-site, allowing gradual rollout
+1. **Agent side**: Re-enable `ALLOW_BODY_ACTING_USER=true` (already the default) so sites can fall back to sending identity in the request body while cookie issues are resolved
+2. **Site side**: Each site can independently revert its event subscriber to stop issuing `SESSaccess_auth` cookies without affecting other sites — the agent treats missing cookies as anonymous
+3. **Full rollback**: If ES256 must be completely reverted, restore `src/vault.py` and HS256 validation from git history, and re-add `JWT_SECRET` / `VAULT_*` env vars. The body fallback path (`acting_user` in request body) continues to work throughout
+4. **Gradual rollout**: Changes are independent per-site. Roll out to one site first (e.g. support.access-ci.org), verify cookies and JWKS endpoint work, then enable on additional sites
 
 ## Appendix: Example JWT
-
-### Encoded
-
-```
-eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJqc21pdGhAYWNjZXNzLWNpLm9yZyIsImlhdCI6MTcwNzAwMDAwMCwiZXhwIjoxNzA3MDg2NDAwfQ.X5qR7mK9vJ2nL8pF3wY6hT1uD4cA0bE9iO2sN7gM5kQ
-```
 
 ### Decoded Header
 
 ```json
 {
-  "alg": "HS256",
-  "typ": "JWT"
+  "alg": "ES256",
+  "typ": "JWT",
+  "kid": "a1b2c3d4e5f67890"
 }
 ```
 
@@ -867,9 +820,10 @@ eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJqc21pdGhAYWNjZXNzLWNpLm9yZyIsIml
 
 ```json
 {
+  "iss": "https://support.access-ci.org",
   "sub": "jsmith@access-ci.org",
   "iat": 1707000000,
-  "exp": 1707086400
+  "exp": 1707064800
 }
 ```
 
@@ -879,7 +833,7 @@ This authentication pattern is designed to be transferable to other programs bey
 
 1. **Shared parent domain** - All sites must be under a common domain (e.g., `*.myprogram.org`)
 2. **Common identity provider** - A way to authenticate users and obtain a canonical user ID
-3. **Shared signing secret** - Distributed to all sites and the QA Bot Agent
+3. **Per-site signing key** - Each site generates its own EC key pair and publishes the public key via JWKS
 
 ### Configuration Points
 
@@ -887,42 +841,50 @@ To adapt for another program, modify these values:
 
 | Parameter | ACCESS-CI Value | Your Program |
 |-----------|-----------------|--------------|
-| Cookie name | `accessci_session` | `{program}_session` |
+| Cookie name | `SESSaccess_auth` | `SESS{program}_auth` |
 | Cookie domain | `.access-ci.org` | `.{your-domain}` |
 | User ID claim | `sub` (ACCESS ID) | `sub` (your canonical ID) |
 | Identity provider | CILogon | Your IdP (Okta, Auth0, SAML, etc.) |
 | Backend domain | `qa.access-ci.org` | `qa.{your-domain}` |
+| Signing algorithm | ES256 | ES256 (recommended) |
 
 ### Minimal Implementation Checklist
 
 For a new program to adopt this pattern:
 
-- [ ] **Choose cookie name** - e.g., `myprogram_session`
-- [ ] **Generate shared secret** - 256+ bits, store in secrets manager
+- [ ] **Choose cookie name** - e.g., `SESSmyprogram_auth`
+- [ ] **Generate EC key pair per site** - `openssl ecparam -name prime256v1 -genkey -noout`
 - [ ] **Deploy QA Bot Agent** - On a subdomain of your shared domain
-- [ ] **Configure backend** - Set cookie name, domain, and signing secret
-- [ ] **Update sites to issue JWT cookies** - After user authentication
+- [ ] **Configure agent** - Add each site's JWKS URL to trusted issuers
+- [ ] **Update sites to issue JWT cookies** - ES256-signed with `iss` and `kid`
+- [ ] **Publish JWKS** - Each site serves `/.well-known/jwks.json` with its public key
 - [ ] **Set cookie attributes** - `HttpOnly`, `Secure`, `SameSite=None`, `Domain=.{your-domain}`
 
 ### Example: Adapting for "MyResearch" Program
 
 ```python
 # Configuration for MyResearch program
-COOKIE_NAME = "myresearch_session"
+COOKIE_NAME = "SESSmyresearch_auth"
 COOKIE_DOMAIN = ".myresearch.org"
-SIGNING_SECRET = os.environ["MYRESEARCH_SESSION_SECRET"]
+ISSUER = "https://portal.myresearch.org"
+
+# Load site's private key (each site has its own)
+with open("private.pem", "rb") as f:
+    PRIVATE_KEY = f.read()
 
 # JWT payload uses same structure
 payload = {
+    "iss": ISSUER,
     "sub": "researcher123@myresearch.org",  # Canonical user ID
     "iat": int(time.time()),
-    "exp": int(time.time()) + 86400
+    "exp": int(time.time()) + 64800  # 18 hours
 }
 
 # Cookie settings
 response.set_cookie(
     COOKIE_NAME,
-    value=jwt.encode(payload, SIGNING_SECRET, algorithm="HS256"),
+    value=jwt.encode(payload, PRIVATE_KEY, algorithm="ES256",
+                     headers={"kid": KID}),
     domain=COOKIE_DOMAIN,
     httponly=True,
     secure=True,
