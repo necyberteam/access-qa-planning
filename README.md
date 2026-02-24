@@ -92,8 +92,9 @@ The system is built on three main components: the access-agent (LangGraph) handl
 | 05 | [events-actions.md](./05-events-actions.md) | MCP action tools | Announcements (Phase 1), Events (Phase 2) |
 | 06 | [mcp-authentication.md](./06-mcp-authentication.md) | Authentication architecture | OAuth 2.1, CILogon proxy, token strategy |
 | 07 | [backend-integration-spec.md](./07-backend-integration-spec.md) | Backend API contract | Service tokens, X-Acting-User, authorization patterns |
-| 08 | [observability.md](./08-observability.md) | Distributed tracing & monitoring | Grafana Cloud, OpenTelemetry, dashboards |
+| 08 | [observability.md](./08-observability.md) | Distributed tracing & monitoring | Honeycomb, OpenTelemetry, dashboards |
 | 09 | [researcher-profiles.md](./09-researcher-profiles.md) | User personalization | AI profile storage, Drupal integration, privacy controls |
+| 10 | [analytics-and-domain-agents.md](./10-analytics-and-domain-agents.md) | Analytics reporting & domain agents | GA4+DB reports, Mailgun delivery, domain agent routing |
 
 ### Implementation Specs
 
@@ -101,6 +102,8 @@ The system is built on three main components: the access-agent (LangGraph) handl
 |----------|---------|
 | [mcp-extraction-impl.md](./mcp-extraction-impl.md) | MCP Q&A extraction pipeline implementation |
 | [drupal-announcements-api-spec.md](./drupal-announcements-api-spec.md) | Drupal API spec for Announcements (Phase 1 pilot) |
+| [jsm-mcp-server-plan.md](./jsm-mcp-server-plan.md) | JSM MCP server plan for ticket creation/retrieval |
+| [jsm-my-tickets-api-spec.md](./jsm-my-tickets-api-spec.md) | JSM ticket lookup endpoint specification |
 
 ## Reading Paths
 
@@ -130,14 +133,20 @@ For AI agents to take actions on behalf of users:
   - access-agent with query classification (static/dynamic/combined)
   - 10 MCP servers deployed for live data access
   - Argilla integration for human review
+  - Weekly analytics reports (GA4 + PostgreSQL → Mailgun email) — deployed and scheduled
+  - Domain agent routing architecture (announcements + JSM) — code complete, not yet committed
+  - JWT cookie authentication (ES256 + JWKS)
+  - Chatbot UI analytics: core events (`chatbot_open`, `chatbot_question_sent`, etc.) and ACCESS layer events (tickets, security, menu) tracked via GTM → GA4
 - **Key Learnings**:
   - Fine-tuned models didn't reliably retain facts
   - Worse, they hallucinated details around what they did memorize
-  - RAG retrieves verified answers - no hallucination risk
+  - RAG retrieves verified answers — no hallucination risk
 - **Next Steps**:
-  1. Expand Q&A pairs to cover more documentation
-  2. Implement authenticated actions (Phase 2)
-  3. Integrate Atlassian JSM MCP server for support ticket creation/lookup
+  1. Register remaining GA4 custom dimensions (`isEmbedded`, `chatbot_env`)
+  2. Update MCP servers to read `X-Acting-User` header (announcements, JSM)
+  3. Test and deploy domain agent routing (announcements + JSM flows)
+  4. MCP server OpenTelemetry instrumentation
+  5. Observability dashboards and alerting
 
 ## Related Repositories
 

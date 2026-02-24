@@ -444,12 +444,18 @@ Every request through the agent logs structured data for monitoring and analysis
 | Phase 3: RAG Service | ✅ Complete | access-qa-service with pgvector |
 | Phase 4: Agent Integration | ✅ Complete | LangGraph agent with RAG + MCP |
 | Phase 5: Production | ✅ Complete | Deployed and monitoring |
+| Analytics Reporting | ✅ Complete | GA4 + PostgreSQL → weekly email reports via Mailgun |
+| Domain Agent Routing | 🔨 Code Complete | Announcements + JSM react agents; not yet committed/deployed |
+| JWT Authentication | ✅ Complete | ES256 + JWKS cookie auth for browser-based access |
 
 ### Current Focus
 
+- **Analytics**: Weekly reports deployed and scheduled; registering remaining GA4 custom dimensions (`isEmbedded`, `chatbot_env`)
+- **Domain agents**: Announcements and JSM domain routing code complete; blocked on MCP servers reading `X-Acting-User` header
 - Expanding Q&A coverage (more domains, more questions)
 - Improving synthesis quality for combined queries
-- Authenticated actions (Phase 2 - events creation)
+
+> *Details: [Analytics & Domain Agents](./10-analytics-and-domain-agents.md)*
 
 ---
 
