@@ -3,16 +3,19 @@
 > **Implementation guide for**: [access-qa-extraction](https://github.com/necyberteam/access-qa-extraction)
 >
 > **Related docs**: [Q&A Data Preparation](./02-qa-data.md) | [Review System](./03-review-system.md)
+>
+> **Updated**: 2026-02-23 to reflect implemented two-shot pipeline and entity-replace Argilla push.
 
 ## Overview
 
-Build a pipeline that extracts structured data from MCP servers, uses an LLM to generate Q&A pairs, and pushes them to Argilla for human review.
+Pipeline that extracts structured data from MCP servers, uses an LLM in two passes to generate Q&A pairs, scores them with a judge, and pushes them to Argilla for human review.
 
 ```
-┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
-│  MCP Servers    │     │  Change         │     │   LLM (GPT-4)   │     │    Argilla      │
-│  (fetch data)   │────▶│  Detection      │────▶│   Q&A gen       │────▶│   (review)      │
-└─────────────────┘     └─────────────────┘     └─────────────────┘     └─────────────────┘
+┌─────────────────┐     ┌─────────────────┐     ┌──────────────────────┐     ┌─────────────────┐
+│  MCP Servers    │     │  Change         │     │   LLM (two-shot)     │     │    Argilla      │
+│  (fetch data)   │────▶│  Detection      │────▶│   battery+discovery  │────▶│  entity-replace │
+└─────────────────┘     └─────────────────┘     │   + judge scoring    │     └─────────────────┘
+                                                 └──────────────────────┘
 ```
 
 After human review in Argilla, approved pairs are synced to access-qa-service (handled separately).
@@ -23,122 +26,88 @@ After human review in Argilla, approved pairs are synced to access-qa-service (h
 
 ### 1. MCP Data Fetchers
 
-One fetcher per MCP server. Each fetcher:
-- Calls MCP server tools via HTTP (using existing `MCPClient`)
-- Returns a list of entities with their attributes
+One extractor per MCP server. Each fetcher calls MCP server tools via HTTP (using `MCPClient`) or paginates a public API directly, then returns a list of entities with their attributes.
 
-**Servers to implement:**
+**Servers implemented:**
 
-| Server | Priority | Entity Count | Entity Type | Key Attributes |
-|--------|----------|--------------|-------------|----------------|
-| compute-resources | HIGH | ~23 | Resource | name, GPUs, nodes, memory, description |
-| software-discovery | HIGH | ~1,400 | Software Package | name, versions, resources, AI metadata |
-| allocations | MEDIUM | TBD | Project/Allocation | field of science, PI, resources |
-| nsf-awards | MEDIUM | TBD | Award | title, abstract, PI |
-| affinity-groups | LOW | TBD | Group | name, description, focus area |
+| Server | Port | Entity Count | Strategy | Key Attributes |
+|--------|------|--------------|----------|----------------|
+| compute-resources | 3002 | ~26 | list-all | name, GPUs, nodes, memory, description |
+| software-discovery | 3004 | ~1,400 | search-terms (~34 curated terms) | name, versions, resources, AI metadata |
+| allocations | 3006 | ~5,360 | direct API pagination | field of science, PI, resources |
+| nsf-awards | 3007 | ~10K cap | direct API pagination | title, abstract, PI, funding |
+| affinity-groups | 3011 | ~54 | list-all | name, description, coordinator, events |
 
-**Note on volume:** Software-discovery has ~1,400 packages. This requires batching and careful cost management for LLM calls.
+**Extraction strategies:**
+- **list-all** — server returns everything with an empty query (compute-resources, affinity-groups)
+- **search-terms** — curated list of domain keywords, results deduplicated (software-discovery)
+- **direct API pagination** — fetches directly from a public REST API, no MCP (allocations, nsf-awards)
 
-**Example fetcher interface:**
+---
 
-```python
-class ComputeResourcesFetcher:
-    async def fetch_all(self) -> list[dict]:
-        """Fetch all compute resources from MCP server."""
-        # Returns list of resource dicts with all attributes
-```
+### 2. Q&A Generator — Two-Shot Pipeline
 
-### 2. Q&A Generator
+Each entity goes through two sequential LLM calls. Both calls share the same user prompt (the entity data); they differ only in the system prompt.
 
-Takes entity data and generates Q&A pairs using an LLM.
+**LLM backends supported:** Anthropic, OpenAI, local (Ollama/vLLM via OpenAI-compatible API), Transformers. Configured via `LLM_BACKEND` env var.
 
-**LLM**: OpenAI GPT-4 (or gpt-4-turbo for cost savings)
+#### Call 1: Battery
 
-**Generation approach:**
-- Pass entity data to LLM with a domain-specific prompt
-- LLM generates Q&A pairs based on entity complexity (see guidance below)
-- Each answer must include citation marker: `<<SRC:domain:entity_id>>`
+System prompt from `build_battery_system_prompt(domain)`. Instructs the LLM:
 
-**Q&A volume guidance (based on actual MCP data):**
+> "Generate exactly one Q&A pair for each field group listed below. Skip a group only if the data genuinely doesn't contain information for it."
 
-| Entity Complexity | Example | Expected Q&A Pairs |
-|-------------------|---------|-------------------|
-| Simple | Granite (storage archive) - single description | 2-4 pairs |
-| Medium | Ookami, KyRIC - one node type, limited features | 4-6 pairs |
-| Complex | Delta, Bridges-2 - multiple node types, GPU configs, storage | 8-12 pairs |
+Field groups are defined in `FIELD_GUIDANCE` (per domain) — a list of `{fields, instruction, condition}` specs. Example for compute-resources:
 
-Rather than hardcoding a number, the prompt should instruct the LLM to cover all key facts without padding. A storage system with one paragraph of info doesn't need 8 questions.
+| # | Instruction | Data fields | Condition |
+|---|-------------|-------------|-----------|
+| 1 | Overview — what is this resource? | name, description, resourceType | — |
+| 2 | Organization — who operates it? | organization_names | — |
+| 3 | GPU hardware | hardware.gpus | only if hasGpu is true |
+| 4 | CPU/compute hardware | hardware.compute_nodes | only if non-empty |
+| 5 | Storage | hardware.storage | only if non-empty |
+| 6 | Features & capabilities | feature_names | — |
+| 7 | Access — how does a researcher get access? | accessAllocated | — |
 
-**Prompt structure:**
+Result: ~5-7 pairs with guaranteed field coverage. Pair IDs: `{domain}_{entity_id}_{seq_n}`.
 
-```
-You are generating Q&A pairs for a knowledge base about ACCESS-CI computing resources.
+#### Call 2: Discovery
 
-Given this entity data:
-{entity_json}
+System prompt from `build_discovery_system_prompt(domain, existing_pairs)`. Receives the battery pairs as context and is told:
 
-Generate question-answer pairs covering the key facts a researcher would want to know.
-- Cover all important facts without padding or repetition
-- Simple resources may only need 2-4 pairs; complex resources with multiple node types, GPU configurations, etc. may need 8-12
-- Questions should be natural, as a researcher would ask them
-- Answers should be factual and concise
-- Every answer MUST end with a citation marker in this format:
-  <<SRC:{domain}:{entity_id}>>
+> "Find what's missing or interesting that the existing pairs didn't capture — notable partnerships, unique architectures, unusual use cases, specific numbers not yet mentioned. If the existing pairs already cover everything, output `[]`."
 
-Output as JSON array:
-[
-  {"question": "...", "answer": "... <<SRC:compute-resources:delta.ncsa.access-ci.org>>"},
-  ...
-]
-```
+Result: 0-3 additional pairs. The combined battery + discovery output forms the final set for this entity.
 
-**Question types to cover:**
-- Simple factual: "What GPUs does Delta have?"
-- Discovery: "Which resources have A100 GPUs?"
-- Comparison: "How does Delta compare to Expanse?" (for related entities)
-- Recommendation: "What resource is best for machine learning?"
+#### Citation format
 
-### 3. Change Detection
+Every answer must end with `<<SRC:{domain}:{entity_id}>>`. Validated post-hoc by `citation_validator.py`.
+
+---
+
+### 3. Change Detection (Incremental Cache)
 
 Avoid regenerating Q&A for unchanged entities.
 
-**Approach:** Hash-based diff
+**Approach:** Hash-based diff via `IncrementalCache` (`generators/incremental.py`).
 
-1. Fetch entity from MCP
-2. Compute hash of entity data (deterministic JSON → SHA256)
-3. Compare to stored hash from last run
-4. If different or new: generate Q&A, update hash
-5. If same: skip
+1. Fetch and clean entity data
+2. `compute_entity_hash(entity_data)` → `sha256(json.dumps(sorted))[:16]`
+3. Compare against stored hash in `.extraction_cache.json`
+4. If changed or new: run two-shot generation + judge, store new hash + pairs
+5. If unchanged: replay cached pairs (including judge scores)
 
-**Hash storage:** Simple JSON file per domain
+**Cache storage:** `data/output/.extraction_cache.json` — a flat dict keyed `{domain}_{entity_id}`.
 
-```json
-// data/hashes/compute-resources.json
-{
-  "delta.ncsa.access-ci.org": "a1b2c3d4...",
-  "expanse.sdsc.access-ci.org": "e5f6g7h8...",
-  "last_run": "2025-01-15T10:30:00Z"
-}
-```
+Enabled with `--incremental` CLI flag. On first run the cache is empty; every subsequent run skips unchanged entities entirely (all three LLM calls).
 
-### 4. Deduplication Check
+---
 
-Before pushing to Argilla, check for similar existing records.
+### 4. Quality Evaluation (Judge)
 
-**Approach:**
-1. Generate embedding for the question (same model as access-qa-service)
-2. Call Argilla SDK `find_similar_records`
-3. If similarity > 0.9, flag in metadata as potential duplicate
-4. Still push to Argilla - let reviewer decide
+After generation, all pairs for an entity are scored in a single batch by a cheaper "judge" LLM.
 
-**Why not reject duplicates?**
-- New Q&A might be better than existing
-- Reviewer can compare and choose
-- Avoids silent data loss
-
-### 5. Quality Evaluation
-
-Before pushing to Argilla, each Q&A pair is scored by an LLM judge. This enables reviewers to prioritize their work and provides data for future automation.
+**LLM:** Configured via `LLM_JUDGE_BACKEND` / `LLM_JUDGE_MODEL` (defaults to main backend). Recommended: `gpt-4o-mini` or `claude-haiku`.
 
 **Evaluation dimensions:**
 
@@ -147,94 +116,45 @@ Before pushing to Argilla, each Q&A pair is scored by an LLM judge. This enables
 | Faithfulness | Does every claim in the answer match source_data? | 0.0 - 1.0 |
 | Relevance | Does the answer address the question? | 0.0 - 1.0 |
 | Completeness | Does the answer cover key facts from the source? | 0.0 - 1.0 |
-| Confidence | min(faithfulness, relevance, completeness) | 0.0 - 1.0 |
-
-**LLM for evaluation:** `gpt-4o-mini` or `claude-haiku-3.5`
-
-**Cost:** ~$0.18-1.00 per 1000 pairs (roughly 10-25% of generation cost)
-
-**Evaluator prompt:**
-
-```
-You are evaluating a Q&A pair generated from structured data about HPC resources.
-
-SOURCE DATA:
-{source_data_json}
-
-QUESTION: {question}
-ANSWER: {answer}
-
-Score each dimension 0.0-1.0:
-
-1. FAITHFULNESS: Does every claim in the answer match the source data?
-   - 1.0 = All claims verifiable from source
-   - 0.5 = Some claims not in source but plausible
-   - 0.0 = Contains incorrect or fabricated information
-
-2. RELEVANCE: Does the answer address what was asked?
-   - 1.0 = Directly answers the question
-   - 0.5 = Partially answers or includes irrelevant info
-   - 0.0 = Does not answer the question
-
-3. COMPLETENESS: Does the answer include key facts from the source?
-   - 1.0 = Covers all relevant information
-   - 0.5 = Missing some important details
-   - 0.0 = Severely incomplete
-
-Output JSON:
-{"faithfulness": 0.X, "relevance": 0.X, "completeness": 0.X, "issues": ["issue1", ...]}
-```
+| Confidence | `min(faithfulness, relevance, completeness)` | 0.0 - 1.0 |
 
 **Suggested decision logic:**
 
-| Confidence | Suggested Decision | Meaning |
-|------------|-------------------|---------|
-| ≥ 0.8 | `approved` | High quality, quick review |
-| < 0.8 | `needs_review` | Requires careful human review |
+| Confidence | Suggested Decision |
+|------------|--------------------|
+| ≥ 0.8 | `approved` |
+| < 0.8 | `needs_review` |
 
-**Implementation:**
+**Implementation:** `evaluate_pairs(pairs, source_data, judge_client)` in `generators/judge.py`. Mutates `pair.metadata` in-place — does not create new pairs. Wrapped in try/except; if the judge fails, pairs keep `None` scores and the pipeline continues.
 
-```python
-class QAEvaluator:
-    def __init__(self, llm_client: BaseLLMClient):
-        self.llm = llm_client
-
-    def evaluate(self, pair: QAPair) -> QAEvaluation:
-        """Score a Q&A pair against its source_data."""
-        response = self.llm.generate(
-            system=EVALUATOR_SYSTEM_PROMPT,
-            user=format_evaluation_prompt(pair),
-        )
-        scores = parse_evaluation_response(response.text)
-        return QAEvaluation(
-            faithfulness=scores["faithfulness"],
-            relevance=scores["relevance"],
-            completeness=scores["completeness"],
-            confidence=min(scores["faithfulness"], scores["relevance"], scores["completeness"]),
-            issues=scores.get("issues", []),
-            suggested_decision="approved" if confidence >= 0.8 else "needs_review",
-        )
-```
+Skip with `--no-judge`.
 
 **Phase 1 (current):** All pairs go to Argilla with scores. Humans make final decision.
 
-**Phase 2 (future):** After calibrating with ~200 human reviews, high-confidence pairs can auto-approve and bypass human review. The threshold is tuned based on agreement between evaluator and human decisions.
+**Phase 2 (future):** After calibrating with ~200 human reviews, high-confidence pairs can auto-approve. Calibration: compare `suggested_decision` vs human `review_decision` in Argilla.
 
-**Calibration approach:** Compare evaluator's `suggested_decision` against human `review_decision` in Argilla. Track:
-- Precision: Of pairs evaluator marked `approved`, what % did humans approve?
-- Recall: Of pairs humans approved, what % did evaluator mark `approved`?
-- False negatives: Pairs evaluator flagged `needs_review` but humans approved (wastes reviewer time)
-- False positives: Pairs evaluator marked `approved` but humans rejected (quality risk)
+---
 
-Adjust threshold to minimize false positives while keeping false negatives acceptable.
+### 5. Argilla Push — Entity-Replace
 
-**Related:** [ARES](https://github.com/stanford-futuredata/ARES) - Stanford framework for automated RAG evaluation with Prediction-Powered Inference for statistically rigorous results.
+Push Q&A pairs to Argilla using **entity-replace semantics**: for each `source_ref`, delete existing records and push fresh ones.
 
-### 6. Argilla Push
+**Why entity-replace instead of semantic dedup:**
+- Semantic dedup only compares questions — it cannot detect when an answer is outdated
+- Entity-replace is simpler: one entity = one authoritative set of pairs
+- Annotation preservation handles the main downside (see below)
 
-Push Q&A pairs to Argilla for human review.
+**Entity-replace loop (per `source_ref`):**
 
-**Dataset:** `qa-review` (or as configured)
+1. Query existing records filtered by `source_ref`
+2. **Archive annotated records** — if any record has a submitted human response (`response.status == "submitted"`), copy it to `qa-review-archive-superseded` before deletion. Each archived record gets:
+   - `archived_at` — ISO timestamp
+   - `replaced_reason` — `"source_data_changed"`
+   - `annotation_depth` — `"approved_only"` (rubber-stamp) or `"has_edits"` (reviewer edited Q/A or left notes)
+3. Delete all existing records for this `source_ref`
+4. Push fresh records with new pairs + judge scores + embeddings
+
+**Dataset:** `qa-review` (configurable). Embedding model: `all-MiniLM-L6-v2` (384-dim).
 
 **Record fields:**
 
@@ -242,79 +162,86 @@ Push Q&A pairs to Argilla for human review.
 |-------|------|-------------|
 | question | text | The generated question |
 | answer | text | The generated answer with citation |
-| domain | metadata | MCP server domain (e.g., `compute-resources`) |
-| entity_id | metadata | Entity identifier |
-| source_ref | metadata | MCP URI (e.g., `mcp://compute-resources/resources/delta`) |
-| source_data | metadata | Original entity JSON (for reviewer verification) |
-| is_duplicate | metadata | Boolean flag if similar record exists |
-| generated_at | metadata | Timestamp |
+| source_data | text | Original entity JSON (for reviewer verification) |
+| eval_issues | text[] | Issues flagged by judge |
+| domain | metadata | MCP server domain |
+| source_ref | metadata | MCP URI (`mcp://compute-resources/resources/delta`) |
+| faithfulness_score | metadata | 0.0-1.0 |
+| relevance_score | metadata | 0.0-1.0 |
+| completeness_score | metadata | 0.0-1.0 |
+| confidence_score | metadata | min(three scores) |
+| suggested_decision | metadata | `approved` or `needs_review` |
+| granularity | metadata | `comprehensive` or `comparison` |
 
-**Evaluation fields (from Quality Evaluation step):**
+**Push triggers:**
+- `qa-extract extract ... --push-to-argilla` — extract then push in one step
+- `qa-extract push data/output/file.jsonl` — push an existing JSONL file
 
-| Field | Type | Description |
-|-------|------|-------------|
-| faithfulness_score | float | 0.0-1.0 score from evaluator |
-| relevance_score | float | 0.0-1.0 score from evaluator |
-| completeness_score | float | 0.0-1.0 score from evaluator |
-| confidence_score | float | min(faithfulness, relevance, completeness) |
-| eval_issues | text[] | Issues identified by evaluator |
-| suggested_decision | enum | `approved` or `needs_review` |
+---
 
-These fields enable reviewers to:
-- Sort by confidence (review low-confidence pairs first)
-- Filter by suggested decision
-- See evaluator's reasoning in `eval_issues`
+### 6. Comparison Generator
+
+Programmatic (no LLM) cross-entity Q&A pairs, generated after all extractors complete.
+
+Groups entities by shared attributes and creates questions like:
+- "Which resources have NVIDIA A100 GPUs?"
+- "Which projects use Delta?"
+- "Which affinity groups are in the Science category?"
+
+`granularity = "comparison"` on these pairs. Uses `raw_data` from each extractor (normalized per-entity dicts). No hallucination risk.
+
+---
 
 ### 7. CLI
 
-Command-line interface for running extraction.
-
 ```bash
-# Extract from one server
-qa-extract compute-resources
+# Extract from specific servers
+qa-extract extract compute-resources
+qa-extract extract compute-resources allocations
 
 # Extract from all servers
-qa-extract all
+qa-extract extract compute-resources software-discovery allocations nsf-awards affinity-groups
 
-# Dry run (show what would be generated, don't push)
-qa-extract compute-resources --dry-run
+# Useful flags
+qa-extract extract compute-resources --max-entities 2    # cap LLM calls for testing
+qa-extract extract compute-resources --no-judge           # skip judge scoring
+qa-extract extract compute-resources --incremental        # skip unchanged entities
+qa-extract extract compute-resources --push-to-argilla    # push after extraction
 
-# Force regeneration (ignore hashes)
-qa-extract compute-resources --force
+# Inspect output
+qa-extract stats data/output/file.jsonl
+qa-extract validate data/output/file.jsonl
 
-# Specify output for debugging
-qa-extract compute-resources --output ./debug-output.jsonl
+# Push existing JSONL to Argilla
+qa-extract push data/output/file.jsonl
 ```
 
 ---
 
 ## Configuration
 
-Environment variables:
-
 ```bash
 # MCP Server URLs
 MCP_COMPUTE_RESOURCES_URL=http://localhost:3002
-MCP_SOFTWARE_DISCOVERY_URL=http://localhost:3003
-MCP_ALLOCATIONS_URL=http://localhost:3004
-MCP_AFFINITY_GROUPS_URL=http://localhost:3005
-MCP_NSF_AWARDS_URL=http://localhost:3006
+MCP_SOFTWARE_DISCOVERY_URL=http://localhost:3004
+MCP_ALLOCATIONS_URL=http://localhost:3006
+MCP_NSF_AWARDS_URL=http://localhost:3007
+MCP_AFFINITY_GROUPS_URL=http://localhost:3011
 
-# OpenAI
+# LLM backend (anthropic | openai | local | transformers)
+LLM_BACKEND=anthropic
+ANTHROPIC_API_KEY=sk-ant-...
+# or
 OPENAI_API_KEY=sk-...
-OPENAI_MODEL=gpt-4-turbo  # or gpt-4
+OPENAI_MODEL=gpt-4o
+
+# Judge (cheaper model recommended)
+LLM_JUDGE_BACKEND=openai
+LLM_JUDGE_MODEL=gpt-4o-mini
 
 # Argilla
-ARGILLA_URL=https://argilla.example.com
-ARGILLA_API_KEY=...
-ARGILLA_DATASET=qa-review
-
-# Embedding model (for deduplication)
-EMBEDDING_MODEL=all-MiniLM-L6-v2
-
-# Evaluation (optional - defaults to gpt-4o-mini)
-EVAL_LLM_BACKEND=openai        # or anthropic
-EVAL_LLM_MODEL=gpt-4o-mini     # or claude-haiku-3.5
+ARGILLA_URL=http://localhost:6900
+ARGILLA_API_KEY=argilla.apikey
 ```
 
 ---
@@ -324,203 +251,67 @@ EVAL_LLM_MODEL=gpt-4o-mini     # or claude-haiku-3.5
 ```
 access-qa-extraction/
 ├── src/access_qa_extraction/
-│   ├── __init__.py
-│   ├── cli.py                 # Typer CLI entrypoint
-│   ├── config.py              # Settings via pydantic-settings
-│   ├── mcp_client.py          # HTTP client for MCP
-│   ├── llm_client.py          # LLM abstraction (Anthropic, OpenAI, local)
-│   ├── models.py              # QAPair, QAEvaluation models
+│   ├── cli.py                      # Typer CLI: extract, push, stats, validate
+│   ├── config.py                   # ExtractionConfig, MCPServerConfig
+│   ├── mcp_client.py               # Async HTTP client for MCP tool endpoints
+│   ├── llm_client.py               # BaseLLMClient + 4 backends, get_llm_client()
+│   ├── models.py                   # QAPair, Message, QAMetadata
+│   ├── question_categories.py      # FIELD_GUIDANCE, battery/discovery prompt builders
+│   ├── citation_validator.py       # Validates <<SRC:>> citations
+│   ├── argilla_client.py           # Entity-replace push with annotation archiving
 │   ├── extractors/
-│   │   ├── __init__.py
-│   │   ├── base.py            # BaseExtractor abstract class
-│   │   ├── compute_resources.py
-│   │   ├── software_discovery.py
-│   │   ├── allocations.py
-│   │   ├── nsf_awards.py
-│   │   └── affinity_groups.py
-│   ├── evaluator.py           # LLM-as-judge quality scoring
-│   ├── deduplication.py       # Embedding + similarity check
-│   ├── change_detection.py    # Hash-based diff
-│   └── argilla_client.py      # Push to Argilla
+│   │   ├── base.py                 # BaseExtractor (MCPClient context manager)
+│   │   ├── compute_resources.py    # list-all via MCP
+│   │   ├── software_discovery.py   # search-terms via MCP
+│   │   ├── allocations.py          # direct API pagination (overrides run())
+│   │   ├── nsf_awards.py           # direct API pagination (overrides run())
+│   │   └── affinity_groups.py      # list-all via MCP
+│   ├── generators/
+│   │   ├── incremental.py          # Hash cache, compute_entity_hash()
+│   │   ├── judge.py                # evaluate_pairs() — LLM-as-judge scoring
+│   │   └── comparisons.py          # Programmatic cross-entity Q&A
+│   └── output/
+│       └── jsonl_writer.py         # Writes QAPair lists to .jsonl
 ├── data/
-│   ├── hashes/                # Change detection hashes
-│   └── output/                # Debug output (gitignored)
+│   └── output/                     # JSONL output + .extraction_cache.json
 ├── tests/
-├── pyproject.toml
-└── README.md
+├── docs/
+│   └── TRACE-TOUR.extract.md       # Annotated execution trace (22 waypoints)
+└── pyproject.toml
 ```
 
 ---
 
-## Implementation Order
+## Implementation Status
 
-### Phase 1: Core Pipeline (one server) ✅
+### ✅ Phase 1: Core Pipeline
+Extractors for all 5 servers. Two-shot LLM generation (battery + discovery). Incremental hash cache. Comparison generator.
 
-1. **Extractor for compute-resources** - Fetch all resources, generate Q&A via LLM
-2. **CLI basics** - `qa-extract extract compute-resources --dry-run`
-3. **Test end-to-end** - Verify Q&A quality manually
+### ✅ Phase 2: Quality Evaluation
+Judge LLM scores all pairs per entity (faithfulness, relevance, completeness, confidence). Scores stored in cache and JSONL output.
 
-### Phase 2: Argilla Integration ✅
+### ✅ Phase 3: Argilla Integration
+Entity-replace push with annotation archiving. Full metadata schema including judge scores, granularity, source_ref, eval_issues. Embedding generation (all-MiniLM-L6-v2).
 
-4. **Argilla push** - Push records to dataset with embeddings
-5. **Deduplication** - Vector similarity check before insert
-6. **CLI flags** - `--push-to-argilla`, `--no-dedup`
+### 🔲 Phase 4: Production
+- PR `feat/two-shot` → `main`
+- Per-domain output cleanup (allocations grammar, affinity-groups coverage)
+- Answer open questions with Andrew (PI emails in training data?)
+- Software-discovery live testing (needs `SDS_API_KEY`)
 
-### Phase 3: Remaining Servers ✅
+### 🔲 Phase 5: Automation
+- GitHub Actions or cron for weekly extraction runs
+- Monitoring and alerting on extraction failures
 
-7. **software-discovery extractor** - Search-terms strategy
-8. **allocations extractor** - Broad-queries strategy
-9. **nsf-awards extractor** - Broad-queries strategy
-10. **affinity-groups extractor** - List-all strategy
-
-### Phase 4: Quality Evaluation ← **CURRENT**
-
-11. **QAEvaluator class** - LLM-as-judge scoring (faithfulness, relevance, completeness)
-12. **Evaluation model** - `QAEvaluation` dataclass with scores and issues
-13. **Argilla metadata** - Add evaluation scores and suggested_decision fields
-14. **CLI integration** - Evaluate before push, add `--skip-eval` flag
-15. **Calibration tooling** - Compare evaluator vs human decisions after ~200 reviews
-
-### Phase 5: Automation
-
-16. **Scheduling** - GitHub Actions or cron for weekly runs
-17. **Monitoring** - Log extraction stats, alert on failures
-18. **Change detection** - Hash storage, skip unchanged entities (deferred - regeneration is cheap enough)
-
-### Phase 6: Auto-Approval (Future)
-
-19. **Threshold tuning** - Analyze Phase 4 calibration data
-20. **Auto-approve flow** - High-confidence pairs bypass Argilla, push directly to vector DB
-21. **Audit logging** - Track auto-approved pairs for quality monitoring
-
----
-
-## Q&A Generation Prompts
-
-### Compute Resources
-
-```
-You are generating Q&A pairs about ACCESS-CI compute resources for researchers.
-
-Resource data:
-{entity_json}
-
-Generate 3-8 Q&A pairs covering:
-- Hardware specs (GPUs, CPUs, memory, storage)
-- Queue/partition information
-- What workloads it's suited for
-- How to access it
-
-Every answer MUST end with: <<SRC:compute-resources:{entity_id}>>
-
-Output as JSON array of {question, answer} objects.
-```
-
-### Software Discovery
-
-```
-You are generating Q&A pairs about software available on ACCESS-CI resources.
-
-Software data:
-{entity_json}
-
-Generate 3-5 Q&A pairs covering:
-- What the software does
-- Which resources have it installed
-- Version information
-- How to load/use it
-
-Every answer MUST end with: <<SRC:software-discovery:{entity_id}>>
-
-Output as JSON array of {question, answer} objects.
-```
-
----
-
-## Error Handling
-
-| Error | Handling |
-|-------|----------|
-| MCP server unavailable | Log error, skip server, continue with others |
-| LLM rate limit | Exponential backoff, retry up to 3 times |
-| LLM returns invalid JSON | Log, retry once with "please output valid JSON" |
-| Argilla push fails | Log error, save to local JSONL for manual retry |
-| Duplicate detection fails | Log warning, push without duplicate flag |
-| Evaluation fails | Log warning, set confidence=0.0 and suggested_decision=`needs_review` |
-
----
-
-## Testing
-
-### Unit Tests
-- Extractor parsing (mock MCP responses)
-- Q&A generator output validation
-- Citation marker extraction
-- Evaluator response parsing
-
-### Integration Tests
-- End-to-end with test MCP server
-- Argilla push to test dataset
-- Evaluation scoring pipeline
-
-### Manual Validation
-- Review generated Q&A quality
-- Check citation accuracy
-- Verify deduplication works
-- Spot-check evaluator scores against human judgment
-
----
-
-## Success Criteria
-
-### Generation Quality
-
-| Metric | Target |
-|--------|--------|
-| Q&A pairs generated per resource | 3-8 |
-| Citation marker present | 100% |
-| Invalid JSON from LLM | <5% of calls |
-| Duplicate detection accuracy | >90% |
-| Time to extract compute-resources | <2 minutes |
-
-### Evaluation Quality (after calibration)
-
-| Metric | Target | Notes |
-|--------|--------|-------|
-| Evaluator precision | >90% | Of `suggested: approved`, humans approve 90%+ |
-| Evaluator recall | >80% | Of human-approved, evaluator suggests 80%+ |
-| False positive rate | <5% | Evaluator says approved, human rejects |
-| Evaluation cost | <$1/1000 pairs | Using gpt-4o-mini or haiku |
-
----
-
-## Handling High-Volume Sources (Software Discovery)
-
-With ~1,400 software packages, software-discovery requires special handling:
-
-**Cost estimation:**
-- ~1,400 packages × ~3 Q&A pairs avg = ~4,200 Q&A pairs
-- GPT-4-turbo: ~$0.01-0.03 per package = $14-42 for full extraction
-- With change detection, ongoing costs are much lower (only changed packages)
-
-**Recommended approach:**
-
-1. **Batch fetching** - Fetch all packages in one call (API supports high limits)
-2. **Sequential LLM calls with rate limiting** - Process one package at a time, respect rate limits
-3. **Checkpoint progress** - Save state after each batch so extraction can resume if interrupted
-4. **Prioritize by usage** - Consider extracting popular packages first (tensorflow, python, etc.)
-
-**Q&A scope for software:**
-- Most packages need only 2-3 Q&A pairs (what it is, where available, how to load)
-- Complex packages with extensive AI metadata might get 4-5 pairs
-- Don't generate pairs for packages with null/empty descriptions
+### 🔲 Phase 6: Auto-Approval (Future)
+After calibrating evaluator against ~200 human reviews: auto-approve high-confidence pairs, bypass Argilla, push directly to vector DB.
 
 ---
 
 ## Open Questions
 
-1. **Comparison Q&A** - Should generator produce cross-entity comparisons? ("Delta vs Expanse") Or leave for later?
+1. **PI emails in training data** — NSF award data includes PI email addresses. OK to include in Q&A pairs pushed to Argilla and eventually to RAG?
 
-2. **Argilla dataset schema** - Need to confirm field names match what access-qa-service expects for sync.
+2. **Variable pair count** — Battery generates one pair per field group (~5-7); discovery adds 0-3 more. Total per entity varies. Is this OK, or should we target a fixed count?
 
-3. **Software prioritization** - Should we extract all 1,400 packages, or start with a curated list of common ones?
+3. **Software-discovery volume** — ~1,400 packages × 3 LLM calls each = significant cost. Should we cap, or use a cheaper model for software?
