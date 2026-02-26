@@ -276,7 +276,7 @@ access-qa-extraction/
 │   └── output/                     # JSONL output + .extraction_cache.json
 ├── tests/
 ├── docs/
-│   └── GUIDED-TOUR.md              # Code walkthrough: birth to disk
+│   └── TRACE-TOUR.extract.md       # Annotated execution trace (22 waypoints)
 └── pyproject.toml
 ```
 
