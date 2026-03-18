@@ -1,6 +1,6 @@
 # Analytics Reporting & Domain Agents
 
-> **Related**: [Observability](./08-observability.md) | [Agent Architecture](./01-agent-architecture.md) | [Events Actions](./05-events-actions.md)
+> **Related**: [Observability](./08-observability.md) | [Agent Architecture](./01-agent-architecture.md) | [Events Actions](./05-events-actions.md) | [Capability Registry](./11-capability-registry.md)
 
 ## Overview
 

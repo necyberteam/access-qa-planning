@@ -95,6 +95,7 @@ The system is built on three main components: the access-agent (LangGraph) handl
 | 08 | [observability.md](./08-observability.md) | Distributed tracing & monitoring | Honeycomb, OpenTelemetry, dashboards |
 | 09 | [researcher-profiles.md](./09-researcher-profiles.md) | User personalization | AI profile storage, Drupal integration, privacy controls |
 | 10 | [analytics-and-domain-agents.md](./10-analytics-and-domain-agents.md) | Analytics reporting & domain agents | GA4+DB reports, Mailgun delivery, domain agent routing |
+| 11 | [capability-registry.md](./11-capability-registry.md) | Capability discovery & ratings | Dynamic UI, personalized context, contextual ratings |
 
 ### Implementation Specs
 
@@ -141,12 +142,19 @@ For AI agents to take actions on behalf of users:
   - Fine-tuned models didn't reliably retain facts
   - Worse, they hallucinated details around what they did memorize
   - RAG retrieves verified answers — no hallucination risk
+- **In Progress**:
+  - JWT cookie authentication working end-to-end (Drupal → agent → MCP servers)
+  - Domain agent routing deployed for announcements + JSM
+  - Announcements CRUD working with authenticated user attribution
+  - Drupal content assist API (`/api/suggest-tags`, `/api/suggest-summary`)
+  - Capability registry design spec complete ([11-capability-registry](./11-capability-registry.md))
 - **Next Steps**:
-  1. Register remaining GA4 custom dimensions (`isEmbedded`, `chatbot_env`)
-  2. Update MCP servers to read `X-Acting-User` header (announcements, JSM)
-  3. Test and deploy domain agent routing (announcements + JSM flows)
-  4. MCP server OpenTelemetry instrumentation
-  5. Observability dashboards and alerting
+  1. Implement capability registry and dynamic chatbot UI
+  2. Deploy remaining ACCESS sites with JWT cookie support (allocations, access-ci.org, metrics)
+  3. Wire production chatbot UI to agent endpoint
+  4. Register remaining GA4 custom dimensions (`isEmbedded`, `chatbot_env`)
+  5. MCP server OpenTelemetry instrumentation
+  6. Observability dashboards and alerting
 
 ## Related Repositories
 

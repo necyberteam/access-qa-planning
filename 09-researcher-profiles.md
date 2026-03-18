@@ -1,6 +1,6 @@
 # Researcher Profiles
 
-> **Related**: [Agent Architecture](./01-agent-architecture.md) | [MCP Authentication](./06-mcp-authentication.md)
+> **Related**: [Agent Architecture](./01-agent-architecture.md) | [MCP Authentication](./06-mcp-authentication.md) | [Capability Registry](./11-capability-registry.md)
 
 ## Overview
 
