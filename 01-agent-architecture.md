@@ -1,6 +1,6 @@
 # ACCESS Documentation Agent
 
-> **Related**: [Q&A Data Preparation](./02-qa-data.md) | [Review System](./03-review-system.md) | [Model Training (Deprecated)](./04-model-training.md) | [Events Actions](./05-events-actions.md) | [Capability Registry](./11-capability-registry.md)
+> **Related**: [Q&A Data Preparation](./02-qa-data.md) | [Review System](./03-review-system.md) | [Model Training (Deprecated)](./04-model-training.md) | [Events Actions](./05-events-actions.md) | [Capability Registry](./11-capability-registry.md) | [Resource-Scoped RAG](./uky-resource-scoped-rag-spec.md)
 
 ## Overview
 

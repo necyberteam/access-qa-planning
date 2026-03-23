@@ -105,6 +105,7 @@ The system is built on three main components: the access-agent (LangGraph) handl
 | [drupal-announcements-api-spec.md](./drupal-announcements-api-spec.md) | Drupal API spec for Announcements (Phase 1 pilot) |
 | [jsm-mcp-server-plan.md](./jsm-mcp-server-plan.md) | JSM MCP server plan for ticket creation/retrieval |
 | [jsm-my-tickets-api-spec.md](./jsm-my-tickets-api-spec.md) | JSM ticket lookup endpoint specification |
+| [uky-resource-scoped-rag-spec.md](./uky-resource-scoped-rag-spec.md) | Resource-scoped RAG with UKY endpoint integration |
 
 ## Reading Paths
 
@@ -149,12 +150,13 @@ For AI agents to take actions on behalf of users:
   - Drupal content assist API (`/api/suggest-tags`, `/api/suggest-summary`)
   - Capability registry design spec complete ([11-capability-registry](./11-capability-registry.md))
 - **Next Steps**:
-  1. Implement capability registry and dynamic chatbot UI
-  2. Deploy remaining ACCESS sites with JWT cookie support (allocations, access-ci.org, metrics)
-  3. Wire production chatbot UI to agent endpoint
-  4. Register remaining GA4 custom dimensions (`isEmbedded`, `chatbot_env`)
-  5. MCP server OpenTelemetry instrumentation
-  6. Observability dashboards and alerting
+  1. Resource-scoped RAG — pass resource context (e.g., Anvil) from Drupal embedding through the agent to UKY RAG endpoints, with fallback to general RAG when out of scope
+  2. Implement capability registry and dynamic chatbot UI
+  3. Deploy remaining ACCESS sites with JWT cookie support (allocations, access-ci.org, metrics)
+  4. Wire production chatbot UI to agent endpoint
+  5. Register remaining GA4 custom dimensions (`isEmbedded`, `chatbot_env`)
+  6. MCP server OpenTelemetry instrumentation
+  7. Observability dashboards and alerting
 
 ## Related Repositories
 
