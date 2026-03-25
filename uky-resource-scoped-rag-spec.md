@@ -1,6 +1,6 @@
 # Resource-Scoped RAG
 
-> **Related**: [Agent Architecture](./01-agent-architecture.md) | [Capability Registry](./11-capability-registry.md)
+> **Related**: [Agent Architecture](./01-agent-architecture.md) | [Capability Registry](./11-capability-registry.md) | [Resource-Scoped Capabilities](./resource-scoped-capabilities.md)
 
 ## Overview
 
@@ -41,7 +41,7 @@ The API does not yet return an `in_scope` flag. When a question is outside the R
 
 - `access-qa-bot`: Accept `resourceContext` prop, include in query payload
 - `qa-bot-core`: Pass `resource_context` field in the POST body to `/api/v1/query`
-- Drupal embedding (`headerfooter.js`): Set `resourceContext` based on the page (e.g., resource documentation pages pass the RP slug)
+- Drupal embedding (`headerfooter.js`): Read `data-resource-context` from embed div, pass as `resourceContext` to `qaBot()`
 
 ### Fallback behavior
 
@@ -49,6 +49,10 @@ Until UKY adds the `in_scope` field, we can use a heuristic: if the scoped respo
 
 ### UX
 
-- Resource-specific pages label the chatbot contextually (e.g., "Ask about Anvil")
-- Out-of-scope questions fall back to general RAG — the user gets an answer either way
-- The fallback is transparent to the user
+> **Note:** The UX design has been expanded in [Resource-Scoped Capabilities](./resource-scoped-capabilities.md), which integrates this spec with the capability registry. The summary below is retained for context but the integrated spec is authoritative.
+
+- The embedded chatbot on RP pages is an independent session from the floating widget
+- RP context is passed via `data-resource-context` attribute on the embed div
+- The capabilities endpoint (`GET /api/v1/capabilities?resource_context=<slug>`) returns RP-tailored suggested questions based on which documentation sections are populated
+- Suggested questions are rendered as a flat list (adaptive layout based on count)
+- Out-of-scope questions fall back to general RAG — transparent to the user

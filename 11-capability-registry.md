@@ -1,6 +1,6 @@
 # Capability Registry & User Experience
 
-> **Related**: [Agent Architecture](./01-agent-architecture.md) | [QA Bot Authentication](./08-qa-bot-authentication.md) | [Researcher Profiles](./09-researcher-profiles.md) | [Analytics & Domain Agents](./10-analytics-and-domain-agents.md)
+> **Related**: [Agent Architecture](./01-agent-architecture.md) | [QA Bot Authentication](./08-qa-bot-authentication.md) | [Researcher Profiles](./09-researcher-profiles.md) | [Analytics & Domain Agents](./10-analytics-and-domain-agents.md) | [Resource-Scoped Capabilities](./resource-scoped-capabilities.md)
 >
 > **Spec**: [Detailed implementation spec](../access-agent/docs/superpowers/specs/2026-03-18-capability-registry-design.md) in the access-agent repo
 
@@ -173,7 +173,16 @@ The capability ID is determined by the classify node (which already routes queri
 
 ---
 
+## Resource-Scoped Capabilities
+
+The capabilities endpoint is extended to support resource provider (RP) context for the embedded chatbot on RP documentation pages. When called with `?resource_context=<slug>`, it returns RP-tailored suggested questions based on which documentation sections are populated, plus contextualized general capabilities (support, analytics).
+
+See **[Resource-Scoped Capabilities](./resource-scoped-capabilities.md)** for the full integration design covering the capabilities endpoint extension, RP section caching, adaptive layout, and embedding approach.
+
+---
+
 ## Open Questions
 
 1. **UKY PII policy** — Can the user's name be included in the system prompt? Affects personalized greeting. Fallback: use ACCESS ID username or no name.
 2. **Anonymous RAG access** — If UKY allows unauthenticated queries in the future, most capabilities can be unlocked for anonymous users by flipping the `requires_auth` flag.
+3. **RP slug mapping** — CiDeR resource IDs in Drupal may not match UKY's valid RP slugs. Need a mapping between the two. See [Resource-Scoped Capabilities](./resource-scoped-capabilities.md) open question #1.
