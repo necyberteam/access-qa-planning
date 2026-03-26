@@ -130,30 +130,31 @@ For AI agents to take actions on behalf of users:
 
 - **Phase**: Production / Continuous Improvement
 - **Completed**:
-  - RAG-primary architecture implemented and deployed
-  - access-qa-service running with pgvector + HNSW indexing
-  - access-agent with query classification (static/dynamic/combined)
+  - UKY document RAG as primary RAG source (all queries consult UKY first)
+  - access-qa-service (pgvector) validated but disabled in production (stubs remain for future re-enabling)
+  - access-agent with query classification (static/dynamic/combined/domain)
   - 10 MCP servers deployed for live data access
   - Argilla integration for human review
   - Weekly analytics reports (GA4 + PostgreSQL → Mailgun email) — deployed and scheduled
-  - Domain agent routing architecture (announcements + JSM) — code complete, not yet committed
+  - Domain agent routing (announcements + JSM) — committed on PR #1, 18/18 battery pass
   - JWT cookie authentication (ES256 + JWKS)
-  - Chatbot UI analytics: core events (`chatbot_open`, `chatbot_question_sent`, etc.) and ACCESS layer events (tickets, security, menu) tracked via GTM → GA4
+  - Chatbot UI analytics: core events + ACCESS layer events tracked via GTM → GA4
+  - Agent graph hardening (PR #1, 14 commits): parallel RAG+plan, circuit breaker, hedge detection, direct UKY serve, TOOL_CAVEATS, tightened JSM classification, URL preservation
 - **Key Learnings**:
-  - Fine-tuned models didn't reliably retain facts
-  - Worse, they hallucinated details around what they did memorize
-  - RAG retrieves verified answers — no hallucination risk
+  - Fine-tuned models didn't reliably retain facts; RAG retrieves verified answers
+  - UKY document RAG covers general how-to topics; pgvector Q&A pairs win on entity-specific data
+  - Avoiding LLM rewrite when tools add no value preserves UKY answer quality
+  - Tightened domain classification prevents misrouting (problem descriptions → RAG, not ticket creation)
 - **In Progress**:
-  - JWT cookie authentication working end-to-end (Drupal → agent → MCP servers)
-  - Domain agent routing deployed for announcements + JSM
-  - Announcements CRUD working with authenticated user attribution
-  - Drupal content assist API (`/api/suggest-tags`, `/api/suggest-summary`)
+  - PR #1 (`uky-plus-mcp`, 14 commits) ready for merge into main
   - Capability registry design spec complete ([11-capability-registry](./11-capability-registry.md))
+  - Resource-scoped capabilities spec ([resource-scoped-capabilities](./resource-scoped-capabilities.md))
+  - Turnstile bot protection spec ([turnstile-bot-protection-spec](./turnstile-bot-protection-spec.md))
 - **Next Steps**:
-  1. Resource-scoped RAG — pass resource context (e.g., Anvil) from Drupal embedding through the agent to UKY RAG endpoints, with fallback to general RAG when out of scope
+  1. Merge PR #1 into access-agent main
   2. Implement capability registry and dynamic chatbot UI
-  3. Deploy remaining ACCESS sites with JWT cookie support (allocations, access-ci.org, metrics)
-  4. Wire production chatbot UI to agent endpoint
+  3. Turnstile bot protection for anonymous access
+  4. Resource-scoped RAG — pass resource context from Drupal embedding through agent to UKY
   5. Register remaining GA4 custom dimensions (`isEmbedded`, `chatbot_env`)
   6. MCP server OpenTelemetry instrumentation
   7. Observability dashboards and alerting
