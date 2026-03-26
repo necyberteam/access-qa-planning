@@ -236,11 +236,11 @@ START → classify (domain=null)
 | MCP tool wrapping | Done | `src/agent/domains/tools.py` |
 | Domain agent node | Done | `src/agent/nodes/domain_agent.py` |
 | Classifier extension | Done | `src/agent/nodes/classify.py` (adds `domain` field) |
-| Graph routing | Done | `src/agent/graph.py` (domain_agent → END) |
+| Graph routing | Done | `src/agent/graph.py` (domain_agent → END, or fallback to UKY if no tools) |
 | State extension | Done | `src/agent/state.py` (QueryClassification.domain) |
-| **Committed** | **No** | All changes are uncommitted/unstaged |
-| **Tests** | **No** | No unit or integration tests |
-| **MCP acting user** | **Partial** | Agent sends `X-Acting-User` but MCP servers don't read it yet |
+| **Committed** | **Yes** | PR #1 (`uky-plus-mcp` branch, 14 commits off main) |
+| **Tests** | **Yes** | 18-question battery: 18/18 pass, domain routing validated end-to-end |
+| **MCP acting user** | **Resolved** | `MCP_API_KEY` shared secret enables service-to-service auth |
 
 ### Architecture
 
@@ -299,8 +299,8 @@ The classifier prompt now detects domain intent:
 | domain value | When detected |
 |-------------|---------------|
 | `"announcements"` | User wants to CREATE/UPDATE/DELETE/MANAGE announcements |
-| `"jsm"` | User wants to CREATE a ticket, REPORT an issue, or FILE something |
-| `null` | Searches, informational queries, general questions |
+| `"jsm"` | User explicitly asks to OPEN/FILE a ticket, REPORT an issue. Problem descriptions and complaints route to RAG, not JSM — only explicit ticket-filing language triggers domain routing. |
+| `null` | Searches, informational queries, general questions, problem descriptions |
 
 ### Supporting Changes
 
@@ -311,20 +311,24 @@ The classifier prompt now detects domain intent:
 | `src/tools/mcp_client.py` | Added API key header support for servers requiring auth |
 | `src/main.py` | CORS respects `ALLOWED_ORIGINS` env var |
 
-### Blocking Dependencies
+### Resolved Dependencies
 
-1. **MCP Acting User Gap** — Announcements (port 3009) and JSM (port 3012) servers need to read `X-Acting-User` header instead of static `ACTING_USER_UID` env var. Without this, the domain agent can't attribute actions to the correct user.
+1. **~~MCP Acting User Gap~~** — Resolved via `MCP_API_KEY` shared secret for service-to-service auth. Agent sends API key in header; MCP servers authenticate the agent as a trusted service. Per-user attribution via `X-Acting-User` header works for announcements and JSM.
 
-2. **Username Resolution** — MCP servers need to resolve ACCESS ID (e.g., `apasquale@access-ci.org`) to Drupal UID via JSON:API: `/jsonapi/user/user?filter[name]=username`
+2. **~~Username Resolution~~** — MCP servers resolve ACCESS ID to Drupal UID via JSON:API.
+
+### Resolved Issues (PR #1)
+
+1. **JSM error handling** — When JSM server is unavailable (no tools), domain agent returns `final_answer=None` and clears `domain` to fall back to UKY RAG answer instead of propagating errors.
+2. **JSM misrouting** — Tightened classification to require explicit ticket-filing language. Problem descriptions ("I can't log in to Bridges-2") now route to RAG for troubleshooting, not JSM for ticket creation.
+3. **Domain agent committed** — All domain agent code is committed on `uky-plus-mcp` branch (PR #1, 14 commits).
+4. **End-to-end testing** — 18-question battery includes Q17 (JSM) and Q18 (Announcements), both pass.
 
 ### Remaining Work
 
-1. **Update MCP servers** to read `X-Acting-User` header (announcements, jsm)
-2. **Test domain agent flows** end-to-end (announcements create, JSM ticket create)
-3. **Add tests** — unit tests for classification, tool wrapping, and domain agent node
-4. **Commit and deploy** domain agent changes
-5. **Message history management** — React loop currently passes full conversation; may need context window limits
-6. **Error UX** — What happens when MCP server is down or tool call fails mid-flow
+1. **Merge PR #1** into main
+2. **Message history management** — React loop currently passes full conversation; may need context window limits for long sessions
+3. **Capability registry integration** — Attach capability definitions to domain configs (see [11-capability-registry.md](./11-capability-registry.md))
 
 ---
 
@@ -349,7 +353,9 @@ See [08-observability.md](./08-observability.md) for full plan. Current status:
 ## Priority Order
 
 1. ~~Deploy analytics reports~~ — Done (deployed, cron scheduled, first report sent)
-2. **GA4 custom dimensions** — Register `isEmbedded` (after 24-48h) and `chatbot_env` in GA4 Admin
-3. **MCP acting user** — Update announcements + JSM servers to read `X-Acting-User`
-4. **Domain agent testing** — End-to-end test, then commit and deploy
-5. **Observability improvements** — MCP instrumentation, dashboards, alerting
+2. ~~MCP acting user~~ — Resolved via MCP_API_KEY service auth
+3. ~~Domain agent testing~~ — Committed on PR #1, 18/18 battery pass
+4. **GA4 custom dimensions** — Register `isEmbedded` and `chatbot_env` in GA4 Admin
+5. **Merge PR #1** — 14 commits on `uky-plus-mcp`, ready for main
+6. **Capability registry** — Next major feature (see [11-capability-registry.md](./11-capability-registry.md))
+7. **Observability improvements** — MCP instrumentation, dashboards, alerting

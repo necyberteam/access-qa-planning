@@ -19,13 +19,16 @@ After pilot testing, we pivoted from fine-tuning to RAG:
 ### Current State (Production)
 
 An intelligent agent system where:
-- **Query Classifier**: LLM classifies queries as static, dynamic, or combined
-- **RAG Retrieval**: Handles static queries via semantic search over verified Q&A pairs
+- **Query Classifier**: LLM classifies queries as static, dynamic, combined, or domain
+- **UKY Document RAG**: Primary RAG source — UKY's document retrieval endpoint is consulted for every query. Answers from curated documents with citations.
+- **pgvector Q&A Pair RAG**: Secondary/future — human-curated Q&A pairs with semantic search. Currently disabled (stubs remain) pending production validation.
 - **Live MCP Calls**: Handles dynamic queries (outages, events, metrics, user-specific data)
-- **Combined Synthesis**: Merges RAG knowledge with tool results for comprehensive answers
+- **Combined Synthesis**: Merges UKY knowledge with MCP tool results for comprehensive answers
+- **Direct Serve**: When tools add no value, UKY's answer is served directly without LLM rewrite
+- **Parallel Execution**: Combined/dynamic queries run UKY RAG and tool planning concurrently
+- **Domain Agents**: Specialized react agents for management operations (announcements, JSM tickets)
 - **Citations Preserved**: Maintain link/source capability users rely on
-- **Feedback Loop**: User feedback flows to Argilla for Q&A curation
-- **Action Tools**: Authenticated operations like event creation (Phase 2)
+- **Action Tools**: Authenticated operations via domain agents (announcements CRUD, ticket creation)
 
 ---
 
@@ -51,9 +54,12 @@ RAG retrieval from verified Q&A pairs provides:
 
 | Query Type | Example | Handling |
 |------------|---------|----------|
-| **Static** | "What GPUs does Delta have?" | RAG retrieval from Q&A pairs |
-| **Dynamic** | "Is Delta currently down?" | Live MCP tool call |
-| **Combined** | "What GPUs does Delta have and is it running?" | RAG + MCP together |
+| **Static** | "What GPUs does Delta have?" | UKY document RAG → direct serve if confident |
+| **Dynamic** | "Is Delta currently down?" | UKY RAG + MCP tools in parallel → synthesize |
+| **Combined** | "What GPUs does Delta have and is it running?" | UKY RAG + MCP tools in parallel → combined synthesis |
+| **Domain** | "Open a ticket about my login issue" | UKY RAG (context) → domain agent react loop |
+
+Hardware/software/resource spec queries are classified as **combined** (not static) to preserve the MCP enrichment path — MCP tools often have more current data than documents.
 
 ---
 
@@ -68,31 +74,37 @@ RAG retrieval from verified Q&A pairs provides:
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                           QUERY CLASSIFIER                                   │
 │                                                                             │
-│  LLM determines: STATIC | DYNAMIC | COMBINED                                │
-│  Based on: query intent, data requirements, user context                    │
-└──────────┬──────────────────────┬──────────────────────┬────────────────────┘
-           │                      │                      │
-           ▼                      ▼                      ▼
-┌──────────────────┐   ┌──────────────────┐   ┌──────────────────┐
-│     STATIC       │   │    COMBINED      │   │     DYNAMIC      │
-│                  │   │                  │   │                  │
-│  RAG retrieval   │   │  RAG + MCP       │   │  MCP only        │
-│  from Q&A pairs  │   │  together        │   │                  │
-└────────┬─────────┘   └────────┬─────────┘   └────────┬─────────┘
-         │                      │                      │
-         └──────────────────────┼──────────────────────┘
-                                │
-                                ▼
+│  LLM determines: STATIC | DYNAMIC | COMBINED | DOMAIN                       │
+│  Also: rag_endpoint, domain (announcements/jsm), expanded_query             │
+│  JSM only on explicit "open/file a ticket" language.                        │
+│  Hardware/software specs → combined (not static).                           │
+└──────┬──────────────────┬──────────────────────┬──────────┬─────────────────┘
+       │                  │                      │          │
+       ▼                  ▼                      ▼          ▼
+┌────────────┐   ┌──────────────────┐   ┌────────────┐ ┌────────────┐
+│   STATIC   │   │ COMBINED/DYNAMIC │   │   DOMAIN   │ │            │
+│            │   │                  │   │            │ │  All paths │
+│ Sequential │   │ Parallel path:   │   │ Sequential │ │  start     │
+│ UKY RAG    │   │ UKY RAG + tool   │   │ UKY RAG    │ │  with UKY  │
+│ first      │   │ planning run     │   │ → domain   │ │  document  │
+│            │   │ concurrently     │   │   agent    │ │  RAG       │
+└─────┬──────┘   └────────┬─────────┘   └─────┬──────┘ │            │
+      │                   │                    │        └────────────┘
+      ▼                   ▼                    ▼
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                           SYNTHESIZE NODE                                    │
+│                         RESPONSE STRATEGIES                                  │
 │                                                                             │
-│  Combines RAG matches + tool results → coherent answer with citations       │
+│  UKY DIRECT: confident static → serve raw UKY, hedge stripped, no rewrite  │
+│  COMBINED:   UKY + MCP tools → LLM merges both sources                     │
+│  TOOLS ONLY: MCP data only → LLM formats tool results                     │
+│  DOMAIN:     react agent loop (JSM tickets, announcements CRUD)            │
+│  FALLBACK:   domain agent fails → serve UKY answer from rag_matches        │
 └─────────────────────────────────┬───────────────────────────────────────────┘
                                   │
                                   ▼
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                              RESPONSE                                        │
-│                         (with clickable citations)                           │
+│                   (with citations, URLs preserved)                           │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -105,26 +117,21 @@ RAG retrieval from verified Q&A pairs provides:
 │   ci.org)       │  JWT cookie validation → user identity
 └────────┬────────┘
          │ HTTP
-         ▼
-┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
-│  QA Service     │     │  MCP Servers    │     │  JSM MCP Server │
-│  (FastAPI)      │     │  (TypeScript)   │     │  (TypeScript)   │
-│  pgvector RAG   │     │  10 servers     │     │  Ticket ops     │
-└────────┬────────┘     └────────┬────────┘     └────────┬────────┘
-         │                       │                       │
-         ▼                       ▼                       ▼
-┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
-│  PostgreSQL     │     │  ACCESS APIs    │     │  Netlify Proxy  │
-│  + pgvector     │     │  (live data)    │     │  → Atlassian    │
-│  + HNSW index   │     │                 │     │    JSM          │
-└─────────────────┘     └─────────────────┘     └─────────────────┘
-         ▲
-         │ sync
-┌─────────────────┐     ┌─────────────────┐
-│    Argilla      │     │  HashiCorp      │
-│  Human review   │     │  Vault          │
-│  & curation     │     │  Secret mgmt    │
-└─────────────────┘     └─────────────────┘
+         ├──────────────────────────────────────────────────────────┐
+         ▼                                                          ▼
+┌─────────────────┐     ┌─────────────────┐     ┌─────────────────────────┐
+│  UKY Doc RAG   │     │  MCP Servers    │     │  pgvector QA Service    │
+│  (primary RAG)  │     │  (TypeScript)   │     │  (FastAPI, port 8001)   │
+│  access-ai-     │     │  10 servers     │     │  Currently disabled     │
+│  grace1-ext.    │     │  incl. JSM      │     │  (stubs remain)         │
+│  ccs.uky.edu    │     │                 │     └─────────────────────────┘
+└─────────────────┘     └────────┬────────┘
+                                 │
+                                 ▼
+                        ┌─────────────────┐
+                        │  ACCESS APIs    │
+                        │  (live data)    │
+                        └─────────────────┘
 ```
 
 > **Authentication**: The agent validates user identity via a signed JWT cookie (`.access-ci.org` domain) for browser-based access, or via OAuth 2.1 for direct MCP clients (Claude, ChatGPT). Both paths result in a validated ACCESS ID passed to backends as `X-Acting-User`. See [QA Bot Authentication](./08-qa-bot-authentication.md) and [MCP Authentication](./06-mcp-authentication.md).
@@ -164,15 +171,20 @@ The agent uses an LLM to classify queries based on intent:
 - Specs: "hardware", "specs", "specifications", "capabilities"
 - Documentation: "how do I", "guide", "tutorial"
 
-**Dynamic indicators** (→ MCP tools):
+**Dynamic indicators** (→ UKY RAG + MCP tools in parallel):
 - Time words: "currently", "right now", "today", "this week"
 - Status words: "outage", "down", "maintenance", "status"
 - User-specific: "my project", "my allocation", "my balance"
 - Events: "upcoming", "next", "scheduled"
 
-**Combined indicators** (→ RAG + MCP):
+**Combined indicators** (→ UKY RAG + MCP tools in parallel):
 - Multiple aspects: "specs AND status", "capabilities AND availability"
 - Comparative with current state: "compare to what's available now"
+- Hardware/software/resource specs (widened from static — MCP tools often have more current data)
+
+**Domain indicators** (→ domain agent react loop):
+- `domain=announcements`: User wants to CREATE/UPDATE/DELETE/MANAGE announcements
+- `domain=jsm`: User explicitly asks to OPEN/FILE a ticket, REPORT an issue. Note: problem descriptions and complaints route to RAG, not JSM — only explicit ticket-filing language triggers domain routing
 
 ### Query Expansion
 
@@ -189,23 +201,31 @@ User: "What about Expanse?"
 
 This ensures RAG retrieval works correctly for follow-up questions that would otherwise lack context.
 
-### Similarity Thresholds
+### UKY RAG Confidence
 
-Different thresholds for different query types:
+UKY handles its own retrieval thresholds internally. The agent evaluates UKY responses using **hedge/deflection detection** rather than similarity scores:
 
-| Query Type | Threshold | Rationale |
-|------------|-----------|-----------|
-| Static | 0.85 | High confidence required for direct answers |
-| Combined | 0.75 | More lenient (tools provide additional context) |
-| Fallback | 0.65 | Last resort before "I don't know" |
+| Signal | Action |
+|--------|--------|
+| Confident answer (>500 chars or contains URLs/emails) | Serve directly, no LLM rewrite |
+| Short answer with no links/substance | True deflection → fall through to MCP tools |
+| Any response with domain=jsm/announcements | Save as context, route to domain agent |
+
+This replaced the pgvector similarity threshold approach. UKY produces synthesized answers from documents, so the agent judges the response quality rather than raw similarity scores.
 
 ---
 
 ## RAG Retrieval
 
-### Q&A Service (access-qa-service)
+### UKY Document RAG (Primary)
 
-FastAPI service providing semantic search:
+The production RAG source is UKY's document retrieval endpoint at `access-ai-grace1-external.ccs.uky.edu`. UKY maintains its own document corpus and vector store. The agent calls it via HTTP with an API key (`ACCESS_AI_API_KEY`).
+
+UKY returns synthesized answers from canonical ACCESS documents, including citations and links. The agent evaluates these answers for quality (hedge/deflection detection) and either serves them directly or combines them with MCP tool data.
+
+### pgvector Q&A Service (Secondary — currently disabled)
+
+FastAPI service providing semantic search over human-curated Q&A pairs:
 
 | Feature | Implementation |
 |---------|----------------|
@@ -214,18 +234,7 @@ FastAPI service providing semantic search:
 | Embeddings | sentence-transformers/all-MiniLM-L6-v2 |
 | Caching | Query-level cache (90%+ hit rate for repeated queries) |
 
-### Q&A Pair Format
-
-```json
-{
-  "question": "What GPUs does Delta have?",
-  "answer": "Delta has NVIDIA A100 GPUs with 40GB HBM2 memory. Each GPU node has 4 A100 GPUs. <<SRC:compute-resources:delta.ncsa.access-ci.org>>",
-  "domain": "compute-resources",
-  "entity_id": "delta.ncsa.access-ci.org"
-}
-```
-
-Citations are embedded in answers using `<<SRC:domain:entity_id>>` markers.
+The pgvector path is disabled in production (stubs remain in `qa_client.py`). It was validated during the A.3 bake-off (see `SYSTEM_OVERVIEW.md`) — pgvector Q&A pairs outperform UKY 2-to-1 on entity-specific queries but have zero coverage on general how-to topics. Re-enabling is planned as E.4 (QAP production validation) once UKY+MCP is stable.
 
 → *Details: [Q&A Data Preparation](./02-qa-data.md)*
 
@@ -251,11 +260,15 @@ When queries involve both RAG and MCP data, outputs must be combined coherently.
 
 ### Synthesis Strategies
 
-| Query Type | Strategy |
-|------------|----------|
-| **Static only** | Return RAG answer directly (with citations) |
-| **Dynamic only** | Return MCP response directly |
-| **Combined** | Merge RAG knowledge + MCP data into unified response |
+| Scenario | Strategy |
+|----------|----------|
+| **UKY confident, no tools needed** | Direct serve: raw UKY answer, hedge preamble stripped, no LLM rewrite |
+| **UKY + MCP tools contributed** | LLM combined synthesis: merges UKY knowledge with MCP tool data |
+| **Tools only (UKY deflected)** | LLM formats raw MCP tool data into readable answer |
+| **Domain agent** | React agent loop handles response (announcements CRUD, ticket creation) |
+| **Domain agent failed (no tools)** | Fallback to UKY answer from rag_matches |
+
+The key principle: **avoid LLM rewrite when tools add no value**. If UKY provided a confident answer and MCP tools returned nothing useful (empty, failed, or error), the raw UKY answer is served directly. LLM synthesis only runs on the combined path where tools actually contributed data.
 
 ### Combined Response Pattern
 
@@ -441,21 +454,21 @@ Every request through the agent logs structured data for monitoring and analysis
 | Phase 0: Baseline | ✅ Complete | Golden eval set, current system analysis |
 | Phase 1: Data Pipeline | ✅ Complete | MCP extraction, Argilla review system |
 | Phase 2: Model Training | ⚠️ Deprecated | Fine-tuning abandoned for RAG |
-| Phase 3: RAG Service | ✅ Complete | access-qa-service with pgvector |
-| Phase 4: Agent Integration | ✅ Complete | LangGraph agent with RAG + MCP |
+| Phase 3: RAG Service | ✅ Complete | access-qa-service with pgvector (currently disabled, stubs remain) |
+| Phase 4: Agent Integration | ✅ Complete | LangGraph agent with UKY RAG + MCP |
 | Phase 5: Production | ✅ Complete | Deployed and monitoring |
 | Analytics Reporting | ✅ Complete | GA4 + PostgreSQL → weekly email reports via Mailgun |
-| Domain Agent Routing | 🔨 Code Complete | Announcements + JSM react agents; not yet committed/deployed |
+| Domain Agent Routing | ✅ Committed (PR #1) | Announcements + JSM react agents on `uky-plus-mcp` branch |
 | JWT Authentication | ✅ Complete | ES256 + JWKS cookie auth for browser-based access |
+| Agent Graph Hardening | ✅ Committed (PR #1) | 14 commits: parallel RAG+plan, circuit breaker, hedge detection, direct serve, TOOL_CAVEATS |
 
 ### Current Focus
 
-- **Analytics**: Weekly reports deployed and scheduled; registering remaining GA4 custom dimensions (`isEmbedded`, `chatbot_env`)
-- **Domain agents**: Announcements and JSM domain routing code complete; blocked on MCP servers reading `X-Acting-User` header
-- Expanding Q&A coverage (more domains, more questions)
-- Improving synthesis quality for combined queries
+- **PR #1 (`uky-plus-mcp`)**: 14-commit branch validating UKY+MCP agent vs pure UKY. 18/18 battery pass. Ready for merge.
+- **Capability registry**: 4 new specs published — capability discovery API, Turnstile bot protection, resource-scoped capabilities, resource-scoped RAG. Next major work after PR merge.
+- **Analytics**: Weekly reports deployed and scheduled; remaining GA4 custom dimensions (`isEmbedded`, `chatbot_env`)
 
-> *Details: [Analytics & Domain Agents](./10-analytics-and-domain-agents.md)*
+> *Details: [Analytics & Domain Agents](./10-analytics-and-domain-agents.md)*, [Capability Registry](./11-capability-registry.md)
 
 ---
 
