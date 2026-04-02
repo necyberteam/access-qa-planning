@@ -1,17 +1,28 @@
 # Review System
 
-> **Part of the Data Pipeline**: [Q&A Data Preparation](./02-qa-data.md) → This doc
+> **Part of the Data Pipeline**: [Q&A Data Preparation](../archive/02-qa-data.md) → This doc
 >
-> **Related**: [Agent Architecture](./01-agent-architecture.md) | [Observability](./08-observability.md)
+> **Related**: [Agent Architecture](./01-agent-architecture.md) | [Observability](./08-observability.md) | [Decision 005: Eval Pipeline](../decisions/005-llm-judge-eval-pipeline.md)
 
 ## Overview
 
-Web application for reviewing Q&A data at two critical points:
+Web application for reviewing data at three critical points:
 
-1. **Pre-Deployment Review**: Approve Q&A pairs before they enter the RAG database
-2. **Post-Deployment Feedback**: Capture user feedback on agent responses, flag bad answers for correction
+1. **Pre-Deployment Q&A Review** (on hold): Approve Q&A pairs before they enter the RAG database. Currently on hold while UKY RAG serves as the primary backend ([Decision 002](../decisions/002-uky-rag-over-pgvector.md)).
+2. **Agent Answer Evaluation** (new): Review agent answers scored by the LLM judge. Reviewers see the question, answer, RAG context, tool results, and judge suggestions on a 5-dimension rubric. Human scores calibrate the judge.
+3. **Post-Deployment Feedback**: Capture user feedback on agent responses via thumbs up/down + optional text.
 
-Built on [Argilla](https://argilla.io), an open-source data annotation platform for LLM feedback and data curation, with a thin integration layer for ACCESS-specific features.
+Built on [Argilla](https://argilla.io), an open-source data annotation platform for LLM feedback and data curation, with integration layers for ACCESS-specific features.
+
+### Argilla Dataset Types
+
+| Dataset | Purpose | Lifecycle |
+|---------|---------|-----------|
+| `qa-review` | Q&A pair curation (on hold) | Persistent |
+| `eval-<branch-name>` | Pre-production eval review | Created per branch, deleted on merge |
+| `eval-production` | Production answer review | Persistent, rolling |
+
+See the [eval README](https://github.com/necyberteam/access-agent/blob/main/eval/README.md) for usage and the [eval pipeline spec](https://github.com/necyberteam/access-agent/blob/main/docs/superpowers/specs/2026-03-31-eval-pipeline-design.md) for the full design.
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
@@ -162,7 +173,7 @@ For reviewing Q&A pairs generated from MCP extractions, documentation, and other
 | eval_issues | text[] | Specific issues identified by evaluator |
 | suggested_decision | enum | `approved` (confidence ≥ 0.8) or `needs_review` |
 
-These scores are computed before pushing to Argilla. Reviewers can sort/filter by confidence and use suggested decisions to speed up review. See [Q&A Data Preparation](./02-qa-data.md#quality-evaluation) for details on the evaluation process.
+These scores are computed before pushing to Argilla. Reviewers can sort/filter by confidence and use suggested decisions to speed up review. See [Q&A Data Preparation](../archive/02-qa-data.md#quality-evaluation) for details on the evaluation process.
 
 **Review Actions:**
 

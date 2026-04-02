@@ -904,6 +904,6 @@ The shared cookie approach is simplest when a common domain exists.
 
 ## Related Documents
 
-- [06-mcp-authentication.md](./06-mcp-authentication.md) - MCP OAuth architecture
+- [06-mcp-authentication.md](../active/06-mcp-authentication.md) - MCP OAuth architecture
 - [07-backend-integration-spec.md](./07-backend-integration-spec.md) - Backend API patterns including X-Acting-User header
 - [drupal-announcements-api-spec.md](./drupal-announcements-api-spec.md) - Example backend integration

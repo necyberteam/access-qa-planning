@@ -1,13 +1,14 @@
 # Analytics Reporting & Domain Agents
 
-> **Related**: [Observability](./08-observability.md) | [Agent Architecture](./01-agent-architecture.md) | [Events Actions](./05-events-actions.md) | [Capability Registry](./11-capability-registry.md)
+> **Related**: [Observability](./08-observability.md) | [Agent Architecture](./01-agent-architecture.md) | [Events Actions](./05-events-actions.md) | [Capability Registry](./11-capability-registry.md) | [Decision 005: Eval Pipeline](../decisions/005-llm-judge-eval-pipeline.md)
 
 ## Overview
 
-Two major features in progress for the ACCESS QA system:
+Three reporting and agent capabilities:
 
-1. **Analytics Reporting** — Automated weekly/monthly reports combining GA4 chatbot UI metrics with PostgreSQL agent usage data, delivered via email (Mailgun)
-2. **Domain Agent Routing** — Specialized react agents for management operations (announcements, tickets) that bypass the general RAG pipeline
+1. **Analytics Reporting** (deployed) — Automated weekly reports combining GA4 chatbot UI metrics with PostgreSQL agent usage data, delivered via email (Mailgun) and Slack
+2. **Domain Agent Routing** (deployed) — Specialized react agents for announcements CRUD and JSM ticket creation
+3. **Quality Evaluation Reporting** (new) — Per-dimension quality scores from the eval pipeline (LLM judge + human review), with team/leadership/RP operator report formats. See [eval pipeline spec](https://github.com/necyberteam/access-agent/blob/main/docs/superpowers/specs/2026-03-31-eval-pipeline-design.md) and [eval README](https://github.com/necyberteam/access-agent/blob/main/eval/README.md)
 
 ---
 

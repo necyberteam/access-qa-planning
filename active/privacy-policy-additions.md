@@ -5,8 +5,8 @@
 The ACCESS privacy policy (v1.4, December 2025) does not address the AI-powered Q&A assistant. These are proposed additions to the main policy at [access-ci.org/privacy-policy/](https://access-ci.org/privacy-policy/).
 
 For the full AI Assistant Privacy Notice and tool information page drafts, see:
-- [`pages-current-production.md`](pages-current-production.md) — current production version
-- [`pages-access-qa-tool.md`](pages-access-qa-tool.md) — future agentic version
+- [`pages-current-production.md`](../archive/pages-current-production.md) — current production version
+- [`pages-access-qa-tool.md`](../archive/pages-access-qa-tool.md) — future agentic version
 
 ---
 

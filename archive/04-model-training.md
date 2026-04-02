@@ -1,10 +1,10 @@
 # Model Training
 
-> **⚠️ DEPRECATED**: This approach was set aside after pilot experiments. The fine-tuned model didn't reliably retain factual details, and worse, hallucinated additional details around what it did memorize - mixing real and fabricated information. The system now uses RAG-primary architecture instead. See [Agent Architecture](./01-agent-architecture.md) for the current approach.
+> **⚠️ DEPRECATED**: This approach was set aside after pilot experiments. The fine-tuned model didn't reliably retain factual details, and worse, hallucinated additional details around what it did memorize - mixing real and fabricated information. The system now uses RAG-primary architecture instead. See [Agent Architecture](../active/01-agent-architecture.md) for the current approach.
 
-> **Part of the Data Pipeline**: [Q&A Data Preparation](./02-qa-data.md) → [Review System](./03-review-system.md) → This doc
+> **Part of the Data Pipeline**: [Q&A Data Preparation](./02-qa-data.md) → [Review System](../active/03-review-system.md) → This doc
 >
-> **Related**: [Agent Architecture](./01-agent-architecture.md)
+> **Related**: [Agent Architecture](../active/01-agent-architecture.md)
 
 ## Overview
 

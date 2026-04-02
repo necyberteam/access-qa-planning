@@ -1,8 +1,10 @@
 # JSM MCP Server Plan
 
+> **Status**: Ticket creation implemented and deployed. Ticket retrieval ("My Tickets") in planning — see [jsm-my-tickets-api-spec.md](./jsm-my-tickets-api-spec.md) for the updated spec with OAuth identity model and proxy authentication.
+
 ## Overview
 
-Add a new MCP server to `access_mcp` that enables the ACCESS agent to create support tickets in Jira Service Management (JSM) via the existing Netlify proxy.
+Add a new MCP server to `access_mcp` that enables the ACCESS agent and MCP-connected AI assistants to create and retrieve support tickets in Jira Service Management (JSM) via the existing Netlify proxy.
 
 ## Architecture
 

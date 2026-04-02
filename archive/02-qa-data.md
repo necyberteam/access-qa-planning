@@ -1,6 +1,6 @@
 # Q&A Data Preparation
 
-> **Part of the Data Pipeline**: [Agent Architecture](./01-agent-architecture.md) → This doc → [Review System](./03-review-system.md)
+> **Part of the Data Pipeline**: [Agent Architecture](../active/01-agent-architecture.md) → This doc → [Review System](../active/03-review-system.md)
 
 ## Overview
 
@@ -302,4 +302,4 @@ Domains align with MCP servers and data sources:
 
 Q&A pairs flow through Argilla review, then sync to access-qa-service for RAG retrieval.
 
-→ *Next in pipeline: [Review System](./03-review-system.md)* - Human review before deployment
+→ *Next in pipeline: [Review System](../active/03-review-system.md)* - Human review before deployment

@@ -1,6 +1,6 @@
 # Backend Integration Specification
 
-> **Related**: [MCP Authentication](./06-mcp-authentication.md) | [Agent Architecture](./01-agent-architecture.md)
+> **Related**: [MCP Authentication](../active/06-mcp-authentication.md) | [Agent Architecture](../active/01-agent-architecture.md)
 
 ## Overview
 

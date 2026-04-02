@@ -1,12 +1,14 @@
 # MCP Authentication Architecture (OAuth 2.1)
 
-> **Related**: [Agent Architecture](./01-agent-architecture.md) | [MCP Action Tools](./05-events-actions.md) | [Backend Integration Spec](./07-backend-integration-spec.md) | [Announcements API Spec](./drupal-announcements-api-spec.md) | [QA Bot Authentication](./08-qa-bot-authentication.md)
+> **Status**: Implemented and deployed (March 2026). Auth service at `packages/auth/`, CILogon client registered, working with Claude Connectors. See `packages/auth/src/cilogon-provider.ts` for implementation.
+
+> **Related**: [Agent Architecture](./01-agent-architecture.md) | [MCP Action Tools](./05-events-actions.md) | [Backend Integration Spec](../archive/07-backend-integration-spec.md) | [Announcements API Spec](../archive/drupal-announcements-api-spec.md) | [QA Bot Authentication](../archive/08-qa-bot-authentication.md)
 
 ## Overview
 
 This document describes OAuth 2.1 authentication for **direct MCP client connections** — researchers connecting from Claude, ChatGPT, Copilot, and other MCP-compatible clients.
 
-> **Important**: This OAuth flow applies only to direct MCP clients. The browser-based QA Bot uses a different authentication model — a signed JWT cookie scoped to `.access-ci.org`. See [QA Bot Authentication](./08-qa-bot-authentication.md) for that flow. The two authentication paths converge at the same point: the MCP server receives a validated user identity and passes `X-Acting-User` to backend APIs.
+> **Important**: This OAuth flow applies only to direct MCP clients. The browser-based QA Bot uses a different authentication model — a signed JWT cookie scoped to `.access-ci.org`. See [QA Bot Authentication](../archive/08-qa-bot-authentication.md) for that flow. The two authentication paths converge at the same point: the MCP server receives a validated user identity and passes `X-Acting-User` to backend APIs.
 
 The architecture ensures:
 
@@ -139,7 +141,7 @@ This is the standard pattern used by Cloudflare, Stytch, and other production MC
 
 ### Current State
 
-- 10 MCP servers with 24 tools deployed on Linode
+- 11 MCP servers deployed on Linode
 - Streamable HTTP transport
 
 ### Changes Required
@@ -290,7 +292,7 @@ Scopes control access at the MCP layer. Fine-grained authorization happens at ea
 - MCP server checks: Does user have required scope?
 - Backend checks: Does user have permission for this specific action?
 
-See [Backend Integration Spec](./07-backend-integration-spec.md) for the backend authorization contract.
+See [Backend Integration Spec](../archive/07-backend-integration-spec.md) for the backend authorization contract.
 
 ---
 
@@ -339,7 +341,7 @@ Each backend API must:
 5. Attribute actions to the user
 6. Log with `X-Request-ID` for tracing
 
-Full specification: [Backend Integration Spec](./07-backend-integration-spec.md)
+Full specification: [Backend Integration Spec](../archive/07-backend-integration-spec.md)
 
 ---
 
@@ -505,7 +507,7 @@ Authenticate when prompted.
 | `X-Acting-User` | User's ACCESS ID |
 | `X-Request-ID` | UUID for tracing |
 
-See [Backend Integration Spec](./07-backend-integration-spec.md) for full contract.
+See [Backend Integration Spec](../archive/07-backend-integration-spec.md) for full contract.
 
 ---
 

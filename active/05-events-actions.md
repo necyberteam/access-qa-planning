@@ -41,7 +41,7 @@ Once patterns are proven:
 | Document | Purpose |
 |----------|---------|
 | [06-mcp-authentication.md](./06-mcp-authentication.md) | Authentication architecture (JWT, API keys, flow diagrams) |
-| [drupal-announcements-api-spec.md](./drupal-announcements-api-spec.md) | Phase 1: Drupal developer spec for Announcements API |
+| [drupal-announcements-api-spec.md](../archive/drupal-announcements-api-spec.md) | Phase 1: Drupal developer spec for Announcements API |
 
 ---
 
@@ -112,7 +112,7 @@ Uses standard Drupal JSON:API (no custom endpoints needed for CRUD):
 - [ ] Tests
 - [ ] MCP server integration
 
-→ *Full spec: [drupal-announcements-api-spec.md](./drupal-announcements-api-spec.md)*
+→ *Full spec: [drupal-announcements-api-spec.md](../archive/drupal-announcements-api-spec.md)*
 
 ---
 

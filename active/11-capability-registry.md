@@ -1,8 +1,8 @@
 # Capability Registry & User Experience
 
-> **Related**: [Agent Architecture](./01-agent-architecture.md) | [QA Bot Authentication](./08-qa-bot-authentication.md) | [Researcher Profiles](./09-researcher-profiles.md) | [Analytics & Domain Agents](./10-analytics-and-domain-agents.md) | [Resource-Scoped Capabilities](./resource-scoped-capabilities.md)
+> **Related**: [Agent Architecture](./01-agent-architecture.md) | [QA Bot Authentication](../archive/08-qa-bot-authentication.md) | [Researcher Profiles](./09-researcher-profiles.md) | [Analytics & Domain Agents](./10-analytics-and-domain-agents.md) | [Resource-Scoped Capabilities](./resource-scoped-capabilities.md)
 >
-> **Spec**: [Detailed implementation spec](../access-agent/docs/superpowers/specs/2026-03-18-capability-registry-design.md) in the access-agent repo
+> **Spec**: [Detailed implementation spec](https://github.com/necyberteam/access-agent/blob/main/docs/superpowers/specs/2026-03-18-capability-registry-design.md) in the access-agent repo
 
 ## Overview
 

@@ -1,18 +1,24 @@
 # Observability
 
-> **Related**: [Backend Integration Spec](./07-backend-integration-spec.md) | [Agent Architecture](./01-agent-architecture.md)
+> **Related**: [Backend Integration Spec](../archive/07-backend-integration-spec.md) | [Agent Architecture](./01-agent-architecture.md) | [Decision 005: Eval Pipeline](../decisions/005-llm-judge-eval-pipeline.md)
 
 ## Overview
 
-Enable distributed tracing and operational monitoring across the ACCESS QA system to support:
+Three complementary observability layers across the ACCESS QA system:
 
-1. **Debugging** - Trace requests across agent → MCP servers → backends
-2. **Monitoring** - Dashboards for system health and performance
-3. **Alerting** - Notify on errors, latency spikes, unusual patterns
+1. **Operational** (Honeycomb/OpenTelemetry) — Latency, errors, tool failures, request tracing
+2. **Engagement** (GA4/Looker Studio) — Users, sessions, funnels, chatbot interaction events
+3. **Quality** (Eval Pipeline) — Answer correctness, completeness, relevance via LLM judge + human review
+
+This doc covers the **operational** layer. Business analytics are in [Analytics & Domain Agents](./10-analytics-and-domain-agents.md). Quality evaluation is in the [Eval Pipeline spec](https://github.com/necyberteam/access-agent/blob/main/docs/superpowers/specs/2026-03-31-eval-pipeline-design.md) and [Decision 005](../decisions/005-llm-judge-eval-pipeline.md).
+
+### Operational Observability Goals
+
+1. **Debugging** — Trace requests across agent → MCP servers → backends
+2. **Monitoring** — Dashboards for system health and performance
+3. **Alerting** — Notify on errors, latency spikes, unusual patterns
 
 **Note:** User-level auditing ("who did what") is handled by backend systems (Drupal, etc.), not the observability platform. See [Privacy Considerations](#privacy-considerations).
-
-**Note:** Business analytics (weekly reports, GA4 metrics) are covered in [Analytics & Domain Agents](./10-analytics-and-domain-agents.md), not here. This doc covers operational observability (traces, logs, metrics).
 
 ---
 

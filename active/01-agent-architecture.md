@@ -1,37 +1,43 @@
 # ACCESS Documentation Agent
 
-> **Related**: [Q&A Data Preparation](./02-qa-data.md) | [Review System](./03-review-system.md) | [Model Training (Deprecated)](./04-model-training.md) | [Events Actions](./05-events-actions.md) | [Capability Registry](./11-capability-registry.md) | [Resource-Scoped RAG](./uky-resource-scoped-rag-spec.md)
+> **Related**: [Q&A Data Preparation](../archive/02-qa-data.md) | [Review System](./03-review-system.md) | [Model Training (Deprecated)](../archive/04-model-training.md) | [Events Actions](./05-events-actions.md) | [Capability Registry](./11-capability-registry.md) | [Resource-Scoped RAG](./uky-resource-scoped-rag-spec.md)
 
 ## Overview
 
 This is an AI-powered question-answering system for [ACCESS](https://access-ci.org) users. ACCESS (Advanced Cyberinfrastructure Coordination Ecosystem: Services & Support) allocates computing resources—supercomputers, cloud platforms, and storage systems—from Resource Providers to researchers across the US.
 
-The agent uses a **RAG-primary architecture** with live MCP (Model Context Protocol) data access. Static knowledge comes from verified Q&A pairs retrieved via semantic search, while dynamic data comes from real-time API calls.
+The agent uses a **UKY-first architecture** with live MCP (Model Context Protocol) data access. All queries consult the UKY document RAG regardless of classification — the classification determines what additional data sources are consulted, not whether to skip RAG. Dynamic and combined queries run UKY RAG and MCP tool calls in parallel.
 
-### Architecture Decision
+### Architecture Decisions
 
-After pilot testing, we pivoted from fine-tuning to RAG:
+**Decision 001 — Fine-tuning to RAG**: After pilot testing, we pivoted from fine-tuning to RAG:
 - Fine-tuned models didn't reliably retain factual details
 - Worse, they hallucinated additional details around what they did memorize
 - RAG retrieves verified answers directly - no hallucination risk
 - RAG enables instant updates without retraining
 
+**Decision 002 — UKY RAG over pgvector Q&A pairs**: The internal pgvector Q&A service (access-qa-service) is on hold. The University of Kentucky provides a hosted document RAG with broader coverage across ACCESS documentation. UKY RAG is the current production RAG backend.
+
+**Decision 003 — UKY-first routing**: All queries consult UKY RAG. Classification determines parallelism: static queries use RAG only; dynamic and combined queries run RAG + MCP tool calls in parallel, then synthesize both results.
+
 ### Current State (Production)
 
 An intelligent agent system where:
-- **Query Classifier**: LLM classifies queries as static, dynamic, or combined
-- **RAG Retrieval**: Handles static queries via semantic search over verified Q&A pairs
-- **Live MCP Calls**: Handles dynamic queries (outages, events, metrics, user-specific data)
-- **Combined Synthesis**: Merges RAG knowledge with tool results for comprehensive answers
+- **Query Classifier**: LLM classifies queries as static, dynamic, or combined; tags each query with a `capability_id` from the capability registry
+- **UKY RAG**: All queries retrieve from UKY document RAG via semantic search
+- **Live MCP Calls**: Dynamic and combined queries also invoke MCP tools in parallel with RAG (outages, events, metrics, user-specific data)
+- **Combined Synthesis**: Merges UKY RAG results with tool results for comprehensive answers
 - **Citations Preserved**: Maintain link/source capability users rely on
-- **Feedback Loop**: User feedback flows to Argilla for Q&A curation
-- **Action Tools**: Authenticated operations like event creation (Phase 2)
+- **Domain Agents**: Authenticated operations via JSM (tickets) and Announcements domain agents — both implemented and deployed
+- **Eval Pipeline**: LLM-as-judge scoring with Argilla for human review (Decision 005)
+- **Turnstile**: Deferred bot-protection challenge for anonymous users
+- **Feedback Loop**: User feedback flows to Argilla for curation
 
 ---
 
-## Why RAG-Primary?
+## Architecture Evolution
 
-### The Problem with Fine-Tuning
+### Phase 1 — Fine-Tuning (Abandoned)
 
 Initial experiments with fine-tuned models showed:
 - Models didn't reliably retain factual details from training data
@@ -39,21 +45,27 @@ Initial experiments with fine-tuned models showed:
 - This mixing of real and fabricated information is worse than not knowing
 - Retraining required for any knowledge update (slow iteration)
 
-### The RAG Solution
+### Phase 2 — pgvector Q&A RAG (On Hold)
 
-RAG retrieval from verified Q&A pairs provides:
-- Retrieves verified answers directly - no hallucination risk
-- Instant updates (add Q&A pair → immediately available)
-- Consistent citations (embedded in Q&A pairs)
-- Clear "no match" signal when knowledge is missing
+RAG retrieval from an internal pgvector Q&A service (access-qa-service) addressed hallucination but had coverage limits — the Q&A pairs required ongoing manual curation to stay comprehensive.
+
+### Phase 3 — UKY Document RAG (Current)
+
+The University of Kentucky hosts a document RAG over ACCESS documentation with broader, more complete coverage. Migration to UKY RAG (Decision 002) replaced the pgvector Q&A pairs as the primary retrieval backend.
+
+UKY RAG provides:
+- Retrieves from full ACCESS documentation corpus — no gap from missing Q&A pairs
+- Hosted and maintained by UKY, reducing internal ops burden
+- Consistent citations from source documents
+- Broader coverage than hand-curated Q&A pairs
 
 ### Query Routing
 
 | Query Type | Example | Handling |
 |------------|---------|----------|
-| **Static** | "What GPUs does Delta have?" | RAG retrieval from Q&A pairs |
-| **Dynamic** | "Is Delta currently down?" | Live MCP tool call |
-| **Combined** | "What GPUs does Delta have and is it running?" | RAG + MCP together |
+| **Static** | "What GPUs does Delta have?" | UKY RAG only |
+| **Dynamic** | "Is Delta currently down?" | UKY RAG + MCP tools (parallel) |
+| **Combined** | "What GPUs does Delta have and is it running?" | UKY RAG + MCP tools (parallel) |
 
 ---
 
@@ -69,6 +81,7 @@ RAG retrieval from verified Q&A pairs provides:
 │                           QUERY CLASSIFIER                                   │
 │                                                                             │
 │  LLM determines: STATIC | DYNAMIC | COMBINED                                │
+│  Tags query with capability_id from capability registry                     │
 │  Based on: query intent, data requirements, user context                    │
 └──────────┬──────────────────────┬──────────────────────┬────────────────────┘
            │                      │                      │
@@ -76,8 +89,8 @@ RAG retrieval from verified Q&A pairs provides:
 ┌──────────────────┐   ┌──────────────────┐   ┌──────────────────┐
 │     STATIC       │   │    COMBINED      │   │     DYNAMIC      │
 │                  │   │                  │   │                  │
-│  RAG retrieval   │   │  RAG + MCP       │   │  MCP only        │
-│  from Q&A pairs  │   │  together        │   │                  │
+│  UKY RAG only    │   │  UKY RAG +       │   │  UKY RAG +       │
+│                  │   │  MCP (parallel)  │   │  MCP (parallel)  │
 └────────┬─────────┘   └────────┬─────────┘   └────────┬─────────┘
          │                      │                      │
          └──────────────────────┼──────────────────────┘
@@ -86,7 +99,7 @@ RAG retrieval from verified Q&A pairs provides:
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                           SYNTHESIZE NODE                                    │
 │                                                                             │
-│  Combines RAG matches + tool results → coherent answer with citations       │
+│  Combines UKY RAG results + tool results → coherent answer with citations   │
 └─────────────────────────────────┬───────────────────────────────────────────┘
                                   │
                                   ▼
@@ -103,31 +116,43 @@ RAG retrieval from verified Q&A pairs provides:
 │  access-agent   │  LangGraph orchestration (Python)
 │  (qa.access-    │  Query classification → routing → synthesis
 │   ci.org)       │  JWT cookie validation → user identity
+│                 │  Capability registry tagging (capability_id)
+│                 │  Turnstile bot protection (anonymous users)
 └────────┬────────┘
          │ HTTP
          ▼
-┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
-│  QA Service     │     │  MCP Servers    │     │  JSM MCP Server │
-│  (FastAPI)      │     │  (TypeScript)   │     │  (TypeScript)   │
-│  pgvector RAG   │     │  10 servers     │     │  Ticket ops     │
-└────────┬────────┘     └────────┬────────┘     └────────┬────────┘
-         │                       │                       │
-         ▼                       ▼                       ▼
-┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
-│  PostgreSQL     │     │  ACCESS APIs    │     │  Netlify Proxy  │
-│  + pgvector     │     │  (live data)    │     │  → Atlassian    │
-│  + HNSW index   │     │                 │     │    JSM          │
-└─────────────────┘     └─────────────────┘     └─────────────────┘
-         ▲
-         │ sync
+┌─────────────────┐     ┌───────────────────────────┐     ┌─────────────────┐
+│  UKY RAG        │     │  MCP Servers (TS+Python)  │     │  Domain Agents  │
+│  (University    │     │  11 servers:              │     │  (Python/       │
+│   of Kentucky)  │     │  compute-resources        │     │   LangGraph)    │
+│  Document RAG   │     │  system-status            │     │  JSM (tickets)  │
+│  over ACCESS    │     │  software-discovery       │     │  Announcements  │
+│  documentation  │     │  xdmod                    │     │  (CRUD)         │
+└─────────────────┘     │  allocations              │     └────────┬────────┘
+                        │  xdmod-data (Python)      │              │
+                        │  nsf-awards               │              ▼
+                        │  events                   │     ┌─────────────────┐
+                        │  announcements            │     │  Netlify Proxy  │
+                        │  affinity-groups          │     │  → Atlassian    │
+                        │  jsm                      │     │    JSM          │
+                        │  xdmod-data               │     └─────────────────┘
+                        └────────┬──────────────────┘
+                                 │
+                                 ▼
+                        ┌─────────────────┐
+                        │  ACCESS APIs    │
+                        │  (live data)    │
+                        └─────────────────┘
+
 ┌─────────────────┐     ┌─────────────────┐
-│    Argilla      │     │  HashiCorp      │
-│  Human review   │     │  Vault          │
-│  & curation     │     │  Secret mgmt    │
+│    Argilla      │     │  PostgreSQL     │
+│  Human review   │     │  (usage logs,   │
+│  LLM-as-judge   │     │  eval scores,   │
+│  eval pipeline  │     │  checkpoints)   │
 └─────────────────┘     └─────────────────┘
 ```
 
-> **Authentication**: The agent validates user identity via a signed JWT cookie (`.access-ci.org` domain) for browser-based access, or via OAuth 2.1 for direct MCP clients (Claude, ChatGPT). Both paths result in a validated ACCESS ID passed to backends as `X-Acting-User`. See [QA Bot Authentication](./08-qa-bot-authentication.md) and [MCP Authentication](./06-mcp-authentication.md).
+> **Authentication**: The agent validates user identity via a signed JWT cookie (`.access-ci.org` domain) for browser-based access, or via OAuth 2.1 for direct MCP clients (Claude, ChatGPT). Both paths result in a validated ACCESS ID passed to backends as `X-Acting-User`. See [QA Bot Authentication](../archive/08-qa-bot-authentication.md) and [MCP Authentication](./06-mcp-authentication.md).
 
 ---
 
@@ -137,11 +162,11 @@ What can be served via RAG vs. what must come from live MCP:
 
 | Data Type | Source | Notes |
 |-----------|--------|-------|
-| Public resource specs (hardware, GPUs) | **RAG** | Core Q&A pairs |
-| Public software modules | **RAG** | Versions change - consider freshness |
-| Public NSF awards | **RAG** | Public record |
-| General ACCESS documentation | **RAG** | From curated Q&A |
-| Affinity group info | **RAG** | Stable |
+| Public resource specs (hardware, GPUs) | **UKY RAG** | From ACCESS documentation corpus |
+| Public software modules | **UKY RAG** | Versions change - MCP for current availability |
+| Public NSF awards | **UKY RAG** | Public record |
+| General ACCESS documentation | **UKY RAG** | Broad corpus coverage |
+| Affinity group info | **UKY RAG** | Stable |
 | **Per-user allocations** | **MCP** | Privacy/accuracy - always live |
 | **Project-specific details** | **MCP** | Privacy/accuracy - always live |
 | **User SU balances** | **MCP** | Must be real-time |
@@ -149,7 +174,7 @@ What can be served via RAG vs. what must come from live MCP:
 | Upcoming events | **MCP** | Changes frequently |
 | Usage metrics (XDMoD) | **MCP** | Time-sensitive |
 
-**Policy**: Never store user-specific, project-specific, or sensitive allocation details in the Q&A database.
+**Policy**: Never store user-specific, project-specific, or sensitive allocation details in the RAG backend.
 
 ---
 
@@ -157,7 +182,7 @@ What can be served via RAG vs. what must come from live MCP:
 
 ### LLM-Based Classification
 
-The agent uses an LLM to classify queries based on intent:
+The agent uses an LLM to classify queries based on intent and tags each query with a `capability_id` from the capability registry. This enables per-capability analytics, eval scoring, and routing:
 
 **Static indicators** (→ RAG):
 - Factual: "what is", "describe", "explain", "how does"
@@ -189,57 +214,52 @@ User: "What about Expanse?"
 
 This ensures RAG retrieval works correctly for follow-up questions that would otherwise lack context.
 
-### Similarity Thresholds
+### Response Quality Checks
 
-Different thresholds for different query types:
+The agent evaluates whether UKY RAG responses are substantive or deflections. A "deflection" is a response that hedges without providing useful content (e.g., "I don't have information about that"). Substantive responses — even hedged ones — are kept if they contain URLs, email addresses, or significant content (>500 characters).
 
-| Query Type | Threshold | Rationale |
-|------------|-----------|-----------|
-| Static | 0.85 | High confidence required for direct answers |
-| Combined | 0.75 | More lenient (tools provide additional context) |
-| Fallback | 0.65 | Last resort before "I don't know" |
+Note: The config still contains similarity thresholds (`RAG_THRESHOLD_STATIC`, etc.) from the pgvector era. These are not actively used with UKY RAG but are retained for potential future use if pgvector is re-enabled.
 
 ---
 
 ## RAG Retrieval
 
-### Q&A Service (access-qa-service)
+### UKY Document RAG
 
-FastAPI service providing semantic search:
+The University of Kentucky hosts a document RAG over ACCESS documentation. This is the current production RAG backend (Decision 002).
 
 | Feature | Implementation |
 |---------|----------------|
-| Vector store | PostgreSQL + pgvector |
-| Index | HNSW (15x faster than IVFFlat) |
-| Embeddings | sentence-transformers/all-MiniLM-L6-v2 |
-| Caching | Query-level cache (90%+ hit rate for repeated queries) |
+| Provider | University of Kentucky |
+| Corpus | ACCESS documentation (broad coverage) |
+| Query | All queries (static, dynamic, combined) |
+| Routing | Always consulted; classification controls parallelism with MCP |
 
-### Q&A Pair Format
+→ *Details: [Resource-Scoped RAG](./uky-resource-scoped-rag-spec.md)*
 
-```json
-{
-  "question": "What GPUs does Delta have?",
-  "answer": "Delta has NVIDIA A100 GPUs with 40GB HBM2 memory. Each GPU node has 4 A100 GPUs. <<SRC:compute-resources:delta.ncsa.access-ci.org>>",
-  "domain": "compute-resources",
-  "entity_id": "delta.ncsa.access-ci.org"
-}
-```
+### pgvector Q&A Service (On Hold)
 
-Citations are embedded in answers using `<<SRC:domain:entity_id>>` markers.
+The internal `access-qa-service` (FastAPI + PostgreSQL + pgvector) remains available but is on hold while UKY RAG is the active backend. The Q&A pair format and HNSW index design are documented in the archive.
 
-→ *Details: [Q&A Data Preparation](./02-qa-data.md)*
+→ *Details: [Q&A Data Preparation](../archive/02-qa-data.md)*
 
 ### Live MCP Servers
 
-Handle dynamic data that must be current:
+11 MCP servers handle dynamic data that must be current. All use Streamable HTTP transport (migrated from SSE):
 
 | Server | Data Type | Why Live |
 |--------|-----------|----------|
 | system-status | Outages, maintenance | Real-time critical |
 | events | Upcoming workshops | Schedules change |
 | announcements | News, updates | Time-sensitive |
-| xdmod-metrics | Usage statistics | Always current |
-| allocations (user-specific) | Balances, project status | Per-user, real-time |
+| xdmod | Usage statistics | Always current |
+| xdmod-data | Raw XDMoD data access | Always current |
+| allocations | Balances, project status | Per-user, real-time |
+| compute-resources | Hardware specs | Authoritative live source |
+| software-discovery | Module availability | Changes with deployments |
+| nsf-awards | Award data | Live NSF records |
+| affinity-groups | Group membership/info | Live directory |
+| jsm | Ticket operations | Live Atlassian JSM |
 
 → *Details: [Events Actions](./05-events-actions.md)* for authenticated action patterns
 
@@ -253,16 +273,17 @@ When queries involve both RAG and MCP data, outputs must be combined coherently.
 
 | Query Type | Strategy |
 |------------|----------|
-| **Static only** | Return RAG answer directly (with citations) |
-| **Dynamic only** | Return MCP response directly |
-| **Combined** | Merge RAG knowledge + MCP data into unified response |
+| **Static** | Return UKY RAG answer directly (with citations) |
+| **Dynamic** | Combine UKY RAG context + MCP tool results (both ran in parallel) |
+| **Combined** | Combine UKY RAG context + MCP tool results (both ran in parallel) |
+| **UKY direct** | When tools fail or aren't needed, serve UKY answer without LLM rewrite |
 
 ### Combined Response Pattern
 
 ```
 User: "What GPU resources does Delta have and is it currently operational?"
 
-1. RAG provides: GPU specs from verified Q&A (static)
+1. UKY RAG provides: GPU specs from ACCESS documentation (static)
 2. MCP provides: Current system status (dynamic)
 3. Synthesizer combines: "Delta has NVIDIA A100 GPUs with 40GB memory
    (4 per node). The system is currently operational with no reported
@@ -355,36 +376,27 @@ What ACCESS topic can I help you with?"
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                           Q&A CURATION PIPELINE                              │
-├─────────────────────────────────────────────────────────────────────────────┤
-│                                                                             │
-│  MCP Extraction ──┐                                                         │
-│                   │                                                         │
-│  User Feedback ───┼──▶ Argilla Review ──▶ Approved Q&A ──▶ QA Service      │
-│                   │    (human review)                      (pgvector)       │
-│  Documentation ───┘                                                         │
-│                                                                             │
-└─────────────────────────────────────────────────────────────────────────────┘
-                                  │
-                                  ▼
-┌─────────────────────────────────────────────────────────────────────────────┐
 │                          PRODUCTION SYSTEM                                   │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │                                                                             │
-│  User Query ──▶ Query Classifier ──▶ RAG Service ──────────┐                │
-│                        │                                   │                │
-│                        └──▶ Live MCP Servers ──────────────┼──▶ Response    │
-│                                                            │                │
-│                              Synthesize Node ◀─────────────┘                │
+│  User Query ──▶ Query Classifier ──▶ UKY RAG ──────────────┐                │
+│                  (+ capability_id)         │                │                │
+│                        │                  │ (parallel for   │                │
+│                        └──▶ MCP Servers ──┘  dynamic/       │                │
+│                                              combined)      │                │
+│                                                             ▼                │
+│                                              Synthesize Node ──▶ Response   │
 │                                                                             │
 └─────────────────────────────────────────────────────────────────────────────┘
                                   │
                                   ▼
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                           FEEDBACK LOOP                                      │
+│                           EVAL & FEEDBACK LOOP                               │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │                                                                             │
-│  User Feedback (thumbs up/down) ──▶ Argilla ──▶ Q&A Updates                 │
+│  User Feedback (thumbs up/down) ──▶ Argilla ──▶ Curation queue             │
+│                                                                             │
+│  LLM-as-judge eval (Decision 005) ──▶ Argilla ──▶ Human review             │
 │                                                                             │
 │  Low-confidence answers ──▶ Review queue for human verification             │
 │                                                                             │
@@ -397,12 +409,13 @@ What ACCESS topic can I help you with?"
 
 | Metric | Target | How Measured |
 |--------|--------|--------------|
-| **Answer correctness** | ≥90% vs ground-truth | Human eval on golden set |
-| **RAG retrieval accuracy** | ≥85% precision | Relevance scoring |
+| **Answer correctness** | ≥90% vs ground-truth | LLM-as-judge eval pipeline + human review in Argilla |
+| **RAG retrieval accuracy** | ≥85% precision | Relevance scoring via eval pipeline |
 | **Citation coverage** | ≥90% of answers include valid citation | Automated check |
 | **Static query latency** | P95 < 500ms | Response time tracking |
 | **Query routing accuracy** | ≥95% classification | Manual review sample |
 | **User satisfaction** | ≥80% positive feedback | Thumbs up/down in UI |
+| **Per-capability scores** | Tracked by capability_id | Eval pipeline aggregated by capability |
 
 ---
 
@@ -417,7 +430,8 @@ Every request through the agent logs structured data for monitoring and analysis
 | `thread_id` | Conversation identifier |
 | `query_text` | The user's question |
 | `classification` | STATIC / DYNAMIC / COMBINED |
-| `rag_matches` | Number and scores of RAG matches |
+| `capability_id` | Capability tag from capability registry |
+| `rag_matches` | Number and scores of UKY RAG matches |
 | `mcp_tools_called` | List of MCP tools invoked (if any) |
 | `citations_returned` | Count of citations in response |
 | `latency_ms` | End-to-end response time |
@@ -441,18 +455,23 @@ Every request through the agent logs structured data for monitoring and analysis
 | Phase 0: Baseline | ✅ Complete | Golden eval set, current system analysis |
 | Phase 1: Data Pipeline | ✅ Complete | MCP extraction, Argilla review system |
 | Phase 2: Model Training | ⚠️ Deprecated | Fine-tuning abandoned for RAG |
-| Phase 3: RAG Service | ✅ Complete | access-qa-service with pgvector |
-| Phase 4: Agent Integration | ✅ Complete | LangGraph agent with RAG + MCP |
+| Phase 3: RAG Service | ⚠️ On Hold | access-qa-service with pgvector (superseded by UKY RAG) |
+| Phase 4: Agent Integration | ✅ Complete | LangGraph agent with UKY RAG + MCP |
 | Phase 5: Production | ✅ Complete | Deployed and monitoring |
 | Analytics Reporting | ✅ Complete | GA4 + PostgreSQL → weekly email reports via Mailgun |
-| Domain Agent Routing | 🔨 Code Complete | Announcements + JSM react agents; not yet committed/deployed |
+| Domain Agents | ✅ Complete | JSM (tickets) and Announcements (CRUD) deployed |
 | JWT Authentication | ✅ Complete | ES256 + JWKS cookie auth for browser-based access |
+| UKY RAG Migration | ✅ Complete | Migrated from pgvector Q&A pairs to UKY document RAG |
+| Capability Registry | 🔄 In Progress | Data models and classification complete; API endpoints and UI integration in progress |
+| Eval Pipeline | ✅ Complete | LLM-as-judge scoring with Argilla for human review |
+| Streamable HTTP | ✅ Complete | MCP servers migrated from SSE to Streamable HTTP transport |
+| Turnstile Bot Protection | 🔄 In Progress | Code complete; pending Cloudflare key provisioning for deployment |
 
 ### Current Focus
 
-- **Analytics**: Weekly reports deployed and scheduled; registering remaining GA4 custom dimensions (`isEmbedded`, `chatbot_env`)
-- **Domain agents**: Announcements and JSM domain routing code complete; blocked on MCP servers reading `X-Acting-User` header
-- Expanding Q&A coverage (more domains, more questions)
+- **UKY RAG**: Active production backend; resource-scoped RAG spec in progress
+- **Capability registry**: Queries tagged with `capability_id`; enabling per-capability eval and analytics
+- **Eval pipeline**: LLM-as-judge scoring feeding Argilla for systematic quality review
 - Improving synthesis quality for combined queries
 
 > *Details: [Analytics & Domain Agents](./10-analytics-and-domain-agents.md)*
@@ -463,24 +482,25 @@ Every request through the agent logs structured data for monitoring and analysis
 
 | Risk | Mitigation |
 |------|------------|
-| RAG retrieval misses | Low-confidence answers flagged for review |
-| Q&A pairs go stale | Regular sync from MCP servers + Argilla review |
+| RAG retrieval misses | Low-confidence answers flagged for review; UKY corpus has broad coverage |
+| UKY RAG corpus staleness | UKY maintains the document corpus; monitor for coverage gaps |
 | Query classifier mistakes | Default to COMBINED (safe fallback) |
-| Citation accuracy | Citations embedded in Q&A pairs, validated on sync |
-| Privacy concerns | Never store user-specific data in Q&A database |
+| Citation accuracy | Citations from UKY source documents; validated in eval pipeline |
+| Privacy concerns | Never store user-specific data in RAG backend |
+| Bot abuse | Turnstile deferred challenge for anonymous users |
 
 ### Fallback Hierarchy
 
 When components fail, degrade gracefully:
 
 ```
-1. RAG + MCP (optimal)
+1. UKY RAG + MCP (optimal)
         │
-        ▼ (RAG unavailable)
-2. Live MCP only (no static knowledge, but accurate)
+        ▼ (UKY RAG unavailable)
+2. Live MCP only (no document knowledge, but accurate for dynamic queries)
         │
         ▼ (MCP unavailable)
-3. RAG only with disclaimer ("real-time data unavailable")
+3. UKY RAG only with disclaimer ("real-time data unavailable")
         │
         ▼ (both unavailable)
 4. Base LLM with disclaimer ("I don't have current ACCESS data")
@@ -511,7 +531,8 @@ ACCESS already uses CILogon for authentication across its infrastructure. Using 
 
 | Phase | Content Type | Status |
 |-------|--------------|--------|
-| Phase 1 | Announcements | **Active** - simpler content type to establish patterns |
+| Phase 1 | Announcements | **Deployed** - Announcements domain agent in production |
+| Phase 1 | JSM Tickets | **Deployed** - JSM domain agent in production |
 | Phase 2 | Events | Planned - more complex (dates, recurrence, locations) |
 
 ### Key Design Decisions
@@ -529,8 +550,8 @@ ACCESS already uses CILogon for authentication across its infrastructure. Using 
 |----------|---------|
 | [MCP Action Tools](./05-events-actions.md) | Overview of action tools initiative |
 | [MCP Authentication](./06-mcp-authentication.md) | OAuth 2.1 for direct MCP clients (Claude, ChatGPT) |
-| [QA Bot Authentication](./08-qa-bot-authentication.md) | JWT cookie auth for browser-based QA Bot |
-| [Backend Integration Spec](./07-backend-integration-spec.md) | Service token + X-Acting-User contract |
-| [Announcements API Spec](./drupal-announcements-api-spec.md) | Drupal developer spec for Phase 1 |
-| [JSM MCP Server Plan](./jsm-mcp-server-plan.md) | Ticket creation/retrieval via agent |
-| [JSM My Tickets API Spec](./jsm-my-tickets-api-spec.md) | Ticket lookup endpoint specification |
+| [QA Bot Authentication](../archive/08-qa-bot-authentication.md) | JWT cookie auth for browser-based QA Bot |
+| [Backend Integration Spec](../archive/07-backend-integration-spec.md) | Service token + X-Acting-User contract |
+| [Announcements API Spec](../archive/drupal-announcements-api-spec.md) | Drupal developer spec for Phase 1 |
+| [JSM MCP Server Plan](../archive/jsm-mcp-server-plan.md) | Ticket creation/retrieval via agent |
+| [JSM My Tickets API Spec](../archive/jsm-my-tickets-api-spec.md) | Ticket lookup endpoint specification |

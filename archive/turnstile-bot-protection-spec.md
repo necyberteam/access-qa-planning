@@ -1,6 +1,6 @@
 # Turnstile Bot Protection for Chatbot
 
-> **Related**: [Agent Architecture](./01-agent-architecture.md) | [Capability Registry](./11-capability-registry.md)
+> **Related**: [Agent Architecture](../active/01-agent-architecture.md) | [Capability Registry](../active/11-capability-registry.md)
 
 ## Problem
 

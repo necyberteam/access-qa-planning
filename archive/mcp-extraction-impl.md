@@ -2,7 +2,7 @@
 
 > **Implementation guide for**: [access-qa-extraction](https://github.com/necyberteam/access-qa-extraction)
 >
-> **Related docs**: [Q&A Data Preparation](./02-qa-data.md) | [Review System](./03-review-system.md)
+> **Related docs**: [Q&A Data Preparation](./02-qa-data.md) | [Review System](../active/03-review-system.md)
 >
 > **Updated**: 2026-02-23 to reflect implemented two-shot pipeline and entity-replace Argilla push.
 

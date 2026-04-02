@@ -3,7 +3,7 @@
 > **For**: Drupal Developer
 > **Module**: `access_mcp_author`
 > **Priority**: Pilot for MCP Action Tools
-> **Related**: [MCP Action Tools](./05-events-actions.md) | [MCP Authentication](./06-mcp-authentication.md) | [Backend Integration Spec](./07-backend-integration-spec.md)
+> **Related**: [MCP Action Tools](../active/05-events-actions.md) | [MCP Authentication](../active/06-mcp-authentication.md) | [Backend Integration Spec](./07-backend-integration-spec.md)
 
 ## Overview
 
@@ -655,7 +655,7 @@ The same pattern applies to Events:
 
 ## Related Documents
 
-- [MCP Action Tools](./05-events-actions.md) - Overall action tools strategy
-- [MCP Authentication](./06-mcp-authentication.md) - OAuth 2.1 authentication architecture
+- [MCP Action Tools](../active/05-events-actions.md) - Overall action tools strategy
+- [MCP Authentication](../active/06-mcp-authentication.md) - OAuth 2.1 authentication architecture
 - [Backend Integration Spec](./07-backend-integration-spec.md) - Standard pattern for all backends
 - [Key Auth Module](https://www.drupal.org/project/key_auth) - Drupal module documentation
