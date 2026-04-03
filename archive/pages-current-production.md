@@ -1,6 +1,6 @@
 # ACCESS Q&A Tool — Page Drafts
 
-*Draft: February 2026*
+*Draft: February 2026, updated April 2026 to reflect agent architecture*
 
 ---
 
@@ -29,20 +29,23 @@ The assistant is available through the chat widget in the lower-right corner of 
 
 When you ask a question, the tool:
 
-1. **Searches** a curated knowledge base of ACCESS documentation using semantic similarity to find the most relevant information
-2. **Generates a response** using a large language model (LLM) that synthesizes the retrieved documentation into a natural-language answer
+1. **Classifies** your question to determine the best way to answer it
+2. **Retrieves documentation** from ACCESS documentation via a document retrieval service
+3. **Queries live data** when needed (e.g., system status, software availability, events) via ACCESS APIs
+4. **Generates a response** using a large language model (LLM) that synthesizes the retrieved information into a natural-language answer
 
-The tool uses a retrieval-augmented generation (RAG) approach — the LLM generates answers based on retrieved ACCESS documentation rather than relying solely on its pre-trained knowledge. This helps ensure responses are grounded in actual ACCESS content.
+The tool uses a retrieval-augmented generation (RAG) approach — the LLM generates answers based on retrieved ACCESS documentation and live API data rather than relying solely on its pre-trained knowledge. This helps ensure responses are grounded in actual ACCESS content.
 
 #### Technology
 
 | Component | Technology | Purpose |
 |-----------|-----------|---------|
-| **Large language model** | OpenAI GPT-4o | Generates natural-language responses from retrieved documentation |
-| **Document embeddings** | OpenAI text-embedding-3-small | Converts documentation and questions into vectors for semantic search |
-| **Knowledge base** | Curated ACCESS documentation with vector search | Provides relevant context for answering questions |
-| **Ticket submission** | Netlify proxy to Atlassian JSM | Routes support tickets and security reports to the ACCESS support team |
-| **Frontend** | React (react-chatbotify) | Chat interface with guided flows for questions, tickets, and security reports |
+| **Agent** | LangGraph (Python) | Classifies queries, orchestrates retrieval and tool calls, synthesizes answers |
+| **Large language model** | OpenAI GPT-4o | Generates natural-language responses from retrieved information |
+| **Document retrieval** | ACCESS document retrieval service | Searches ACCESS documentation to find relevant context |
+| **Live data** | 11 MCP (Model Context Protocol) servers | Retrieves real-time data: system status, software, events, allocations, etc. |
+| **Ticket submission** | MCP server → Netlify proxy → Atlassian JSM | Routes support tickets and security reports to the ACCESS support team |
+| **Frontend** | React (react-chatbotify) | Chat interface with dynamic capability buttons |
 
 #### Limitations
 
@@ -85,11 +88,13 @@ When you use the assistant, the following information is collected:
 
 | Data | Where it's collected | Purpose |
 |------|---------------------|---------|
-| **Your questions** | Sent to the backend API | Processed by the LLM to generate a response |
-| **Session ID** | Generated in your browser, sent with each request | Groups messages into a conversation for the backend |
+| **Your questions** | Sent to the agent backend | Processed by the LLM to generate a response. Query text is stored in usage logs. |
+| **Session ID** | Generated in your browser, sent with each request | Groups messages into a conversation |
 | **Query ID** | Generated per question | Correlates questions with responses and ratings |
+| **Hashed user identifier** | Derived from JWT cookie if logged in | Anonymous usage tracking (not reversible to your identity) |
 | **Conversation history** | Stored in your browser (localStorage) | Allows you to review past conversations locally |
-| **Your rating** (if provided) | Sent to the backend API | Quality assurance and tool improvement |
+| **Your rating** (if provided) | Sent to the agent backend | Quality assurance and tool improvement |
+| **Query metadata** | Collected by the agent | Classification type, tools used, response time, capability exercised — for usage reporting |
 
 When you submit a **support ticket or security report** through the assistant, the following additional information is collected and sent to the ACCESS support team via Atlassian JSM:
 
@@ -102,10 +107,10 @@ When you submit a **support ticket or security report** through the assistant, t
 
 #### What information is NOT collected
 
-- **User identity for Q&A questions.** The Q&A feature does not collect or transmit your name, email, ACCESS ID, or any personally identifiable information. Your identity is not linked to your questions or the responses you receive.
+- **Raw user identity in query logs.** If you are logged in, the agent receives your ACCESS ID via a signed cookie for authentication and content attribution. However, query logs store only a hashed, non-reversible identifier — your raw ACCESS ID is not stored alongside your questions.
 - **IP addresses.** The assistant does not log your IP address.
 - **Cross-site tracking.** The assistant does not track your activity across websites or build a profile of your browsing behavior.
-- **Research data.** The assistant does not access your files, compute jobs, or allocations.
+- **Personal profile data (without opt-in).** The assistant does not access your profile information, allocations, skills, or community group memberships unless you explicitly opt in to personalization.
 
 #### How your information is used
 
@@ -124,11 +129,11 @@ Your data is sent to the following third-party services:
 
 | Service | What is shared | Purpose | Data used for training? |
 |---------|---------------|---------|------------------------|
-| **OpenAI API** | Your question text | Generates a response using a large language model | **No.** OpenAI does not train on API data by default ([OpenAI API data policy](https://openai.com/enterprise-privacy/)). |
-| **Atlassian JSM** (via Netlify proxy) | Ticket form data (name, email, issue details, attachments) | Creates support tickets for the ACCESS support team | No |
+| **OpenAI API** | Your question text, retrieved documentation context, and tool results | Generates a response using a large language model | **No.** OpenAI does not train on API data by default ([OpenAI API data policy](https://openai.com/enterprise-privacy/)). |
+| **Atlassian JSM** (via proxy) | Ticket form data (name, email, issue details, attachments) | Creates support tickets for the ACCESS support team | No |
 | **Google Analytics 4** (via Google Tag Manager) | Session ID, timestamps, question/response lengths, page URL, ratings (no question text or PII) | Usage analytics and service improvement | See [Google's data practices](https://support.google.com/analytics/answer/6004245) |
 
-The Q&A backend is hosted at the University of Kentucky. Questions and responses may be stored by the backend for quality assurance purposes.
+The agent backend is hosted on ACCESS infrastructure. Query text, metadata, and ratings are stored in a PostgreSQL database for usage reporting and quality evaluation.
 
 #### What is stored in your browser
 
@@ -156,11 +161,21 @@ These events do not contain your question text, response content, or any persona
 
 #### Cookies
 
-The assistant itself does not set any cookies. API requests include browser credentials, which means any existing cookies for the backend domain are sent with requests. The Q&A backend does not use cookies for user identification.
+If you are logged in to an ACCESS site, a signed authentication cookie (`SESSaccess_auth`) is sent with requests to the assistant. This cookie contains your ACCESS ID and is used to identify you for authenticated actions (e.g., creating announcements, submitting tickets attributed to your account). The assistant does not set any cookies itself.
+
+#### Personalization (opt-in)
+
+If you are logged in, you may opt in to personalized assistance through your community persona settings. When personalization is enabled, the assistant can access your existing ACCESS profile information — such as active allocations, community group memberships, skills, and interests — to provide more relevant answers.
+
+- Personalization is **off by default**. You must explicitly enable it.
+- When enabled, your profile data is included in prompts sent to the LLM to generate personalized responses.
+- You can disable personalization at any time through your profile settings. Disabling it immediately stops the assistant from accessing your profile data.
+- No new personal data is collected for personalization — it uses information you've already provided to ACCESS.
 
 #### Your rights
 
 - **Opt out.** You can choose not to use the assistant. All ACCESS support services remain available at [support.access-ci.org](https://support.access-ci.org) without AI processing.
+- **Control personalization.** Enable or disable personalized responses at any time through your community persona settings.
 - **Clear local data.** Clear your browser's localStorage for the ACCESS site where you used the assistant to remove all locally stored conversation history.
 - **Request data removal.** To request removal of your data from the backend, [open a ticket](https://support.access-ci.org/open-a-ticket) with the subject "AI Assistant Data Request."
 

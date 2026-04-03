@@ -1,6 +1,6 @@
 # Researcher Profiles
 
-> **Related**: [Agent Architecture](./01-agent-architecture.md) | [MCP Authentication](./06-mcp-authentication.md) | [Capability Registry](./11-capability-registry.md)
+> **Related**: [Agent Architecture](./01-agent-architecture.md) | [MCP Authentication](./06-mcp-authentication.md) | [Capability Registry](./11-capability-registry.md) | [Capability Registry Spec](https://github.com/necyberteam/access-agent/blob/main/docs/superpowers/specs/2026-03-18-capability-registry-design.md)
 
 ## Overview
 
@@ -333,57 +333,58 @@ Following MyData's vision of [actionable rights](https://mydata.org/participate/
 
 ## API Design
 
-### Drupal JSON:API Extension
+### Phase 1: Agent Fetches Directly from Drupal
 
-Expose profile data via JSON:API for the MCP server:
+The agent's `/api/v1/capabilities/personalized` endpoint calls Drupal's JSON:API to fetch existing user data. No custom Drupal endpoint needed for Phase 1 — standard JSON:API on the user entity provides everything.
 
-**Endpoint**: `GET /jsonapi/user/user/{uuid}?include=field_ai_*`
+**Drupal data the agent reads:**
+- `field_ai_profile_enabled` — opt-in toggle (new field, the only Drupal change)
+- `field_cider_resources` — active allocations (existing)
+- `field_institution` — institution (existing)
+- `field_hpc_experience` — HPC experience level (existing)
+- Community Persona flags — skills, interests (existing)
+- Affinity group memberships + coordinator status — via `mcp_my_affinity_groups` view (existing)
 
-Or create a custom lightweight endpoint:
-
-**Endpoint**: `GET /api/ai-profile`
+**Agent `/personalized` response (Phase 1):**
 
 ```json
 {
-  "enabled": true,
-  "research_domain": ["bioinformatics", "machine_learning"],
-  "expertise_level": "intermediate",
-  "preferences": {
-    "detail_level": "moderate",
-    "include_examples": true,
-    "show_su_estimates": true
+  "user": {
+    "name": "Drew Pasquale",
+    "access_id": "apasquale@access-ci.org"
   },
-  "context_summary": "Researcher working on genomics pipelines...",
-  "recent_topics": ["pytorch", "gpu_memory", "distributed_training"],
-  "preferred_resources": ["delta.ncsa.access-ci.org", "expanse.sdsc.access-ci.org"],
-  "community_persona": {
+  "highlighted_capabilities": [
+    {
+      "id": "manage_announcements",
+      "label": "Manage Pegasus announcements",
+      "reason": "You coordinate the Pegasus affinity group"
+    }
+  ],
+  "context": {
+    "institution": "University of Example",
+    "hpc_experience": "Familiar with Slurm...",
     "skills": ["python", "machine_learning", "genomics"],
     "interests": ["deep_learning", "bioinformatics"],
-    "affinity_groups": ["ai_institute"],
-    "hpc_experience": "Familiar with Slurm..."
+    "affinity_groups": [
+      {"name": "AI Institute", "is_coordinator": false},
+      {"name": "Pegasus", "is_coordinator": true}
+    ],
+    "active_allocations": [
+      {"resource": "Delta", "project": "TG-CIS123456"}
+    ]
   }
 }
 ```
 
-**Update Endpoint**: `PATCH /api/ai-profile`
+### Future: MCP Server Wrapper
 
-```json
-{
-  "recent_topics": ["new_topic"],
-  "context_summary": "Updated summary..."
-}
-```
-
-### MCP Tool (Alternative)
-
-If using MCP for profile access:
+If other AI tools (Claude Desktop, ChatGPT, etc.) need access to personalization data, wrap the same Drupal calls in an MCP server:
 
 | Tool | Auth | Description |
 |------|------|-------------|
-| `get_researcher_profile` | Required | Fetch user's AI profile |
-| `update_researcher_profile` | Required | Update derived fields |
+| `get_researcher_profile` | Required | Fetch user's personalization context |
 
-This keeps profile access within the existing MCP auth flow.
+This is not needed for Phase 1 (chatbot-only) but can be added later within the existing MCP auth flow.
 
 ---
 
@@ -425,46 +426,72 @@ This keeps profile access within the existing MCP auth flow.
 
 ---
 
+## Relationship to Capability Registry
+
+The capability registry spec defines a `/api/v1/capabilities/personalized` endpoint on the access-agent that fetches user context for the agent and UI. This is the integration point for personalization — it starts with existing Drupal data and grows as profile features are built.
+
+| Phase | `/personalized` returns | Data source |
+|-------|------------------------|-------------|
+| v1 (now) | Allocations, affinity group membership + coordinator status, skills, interests, institution, HPC experience | Existing Drupal fields |
+| v2 (future) | + Research domain, expertise level, response preferences | New Drupal fields |
+| v3 (future) | + Conversation summaries, topic history, resource preferences | Derived from interactions |
+
+The agent fetches personalization data directly from Drupal (JSON:API) — no MCP server in between. The agent already has the user's JWT cookie for authentication. MCP wrapping can be added later if other AI tools need access.
+
+No separate `/api/ai-profile` endpoint needed — the agent's `/personalized` endpoint is the single integration point that aggregates data from Drupal.
+
 ## Implementation Plan
 
-### Phase 1: Drupal Foundation
+### Phase 1: Opt-In Toggle + Existing Data
 
-- [ ] Create new user fields (`field_ai_*`)
-- [ ] Build AI settings form at `/community-persona/ai-settings`
-- [ ] Implement profile enable/disable toggle
-- [ ] Add export functionality
-- [ ] Integrate with existing Community Persona page
+**Drupal:**
+- [ ] Add `field_ai_profile_enabled` boolean to user entity (single toggle, default off)
+- [ ] Expose toggle on community persona page
 
-**Deliverable**: Users can set explicit profile preferences
+**Agent (`/api/v1/capabilities/personalized`):**
+- [ ] Build the endpoint (not yet implemented)
+- [ ] Check `field_ai_profile_enabled` via Drupal JSON:API before returning data
+- [ ] If disabled (default): return `{"highlighted_capabilities": [], "context": {}}`
+- [ ] If enabled: fetch and return from existing Drupal fields:
+  - Active allocations (from `field_cider_resources`)
+  - Affinity group memberships + coordinator status (from `mcp_my_affinity_groups` view)
+  - Skills and interests (from Community Persona flags)
+  - Institution (from `field_institution`)
+  - HPC experience (from `field_hpc_experience`)
+  - User name (for personalized greeting)
+- [ ] Cache results per-user with 5-minute TTL
+- [ ] Graceful degradation: if any Drupal call fails, return partial data
 
-### Phase 2: API Exposure
+**Deliverable**: Users opt in to personalization using data that already exists. No new data collection.
 
-- [ ] Create `/api/ai-profile` endpoints (GET/PATCH)
-- [ ] Add authentication (require logged-in user)
-- [ ] Implement rate limiting
-- [ ] Add to MCP server as tool (or direct HTTP)
+### Phase 2: Agent Integration
 
-**Deliverable**: Agent can read/write profile data
+- [ ] Inject personalized context into agent system prompt
+- [ ] Personalized welcome greeting (use name if opted in)
+- [ ] Placeholder text rotation with contextual suggestions ("Try: 'check my usage on Delta'")
+- [ ] Highlighted capabilities based on user context (e.g., "Manage Pegasus announcements" for coordinators)
 
-### Phase 3: Agent Integration
+**Deliverable**: Agent provides personalized responses for opted-in users
 
-- [ ] Fetch profile in agent initialization
-- [ ] Inject profile context into system prompt
-- [ ] Implement personalized response synthesis
-- [ ] Add profile-aware query expansion
+### Phase 3: User-Provided Preferences (Future)
 
-**Deliverable**: Agent provides personalized responses
+- [ ] Add new Drupal fields: research domain, expertise level, response preferences
+- [ ] Build settings form at `/community-persona/ai-settings`
+- [ ] Agent tailors response style (detail level, examples) based on preferences
+- [ ] Export functionality
 
-### Phase 4: Derived Data
+**Deliverable**: Users explicitly customize their AI experience
 
-- [ ] Implement topic extraction from conversations
-- [ ] Track resource preferences from MCP calls
-- [ ] Generate context summaries (LLM)
-- [ ] Build retention/expiry system
+### Phase 4: Derived Data (Future)
 
-**Deliverable**: Profiles improve automatically
+- [ ] Topic extraction from conversations
+- [ ] Resource preferences from usage patterns
+- [ ] LLM-generated context summaries
+- [ ] Retention/expiry system (90 days for derived data)
 
-### Phase 5: Allocation Streamlining
+**Deliverable**: Profiles improve automatically from interactions
+
+### Phase 5: Allocation Streamlining (Future)
 
 - [ ] Pre-fill allocation forms from profile
 - [ ] Estimate SUs from usage history

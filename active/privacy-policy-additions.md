@@ -1,8 +1,10 @@
 # Proposed Additions to ACCESS Data Sharing and Privacy Policy
 
-*Draft: February 2026*
+*Draft: February 2026, updated April 2026*
 
 The ACCESS privacy policy (v1.4, December 2025) does not address the AI-powered Q&A assistant. These are proposed additions to the main policy at [access-ci.org/privacy-policy/](https://access-ci.org/privacy-policy/).
+
+**Status:** Pending review by ACCESS cybersecurity group. The agent is deploying to production — these updates should be reviewed before or concurrent with launch.
 
 For the full AI Assistant Privacy Notice and tool information page drafts, see:
 - [`pages-current-production.md`](../archive/pages-current-production.md) — current production version
@@ -19,9 +21,11 @@ Add under **Section 4: Information ACCESS Collects**:
 > ACCESS provides an AI-powered assistant on its support website to help users find information about ACCESS services and resources. When users interact with the assistant:
 >
 > - The text of user questions is processed by a large language model (LLM) provided by a third-party service. The LLM provider does not use ACCESS user data to train its models.
-> - If the user is logged in, their ACCESS ID may be used to provide personalized responses and to attribute any content created through the assistant.
+> - If the user is logged in, the assistant receives their identity via a signed JWT cookie (`SESSaccess_auth`). This is used to attribute content created through the assistant (e.g., announcements, support tickets) and to provide personalized responses if the user has opted in.
+> - A hashed, non-reversible version of the user identifier is stored with each query for aggregate usage reporting. The raw ACCESS ID is not stored in query logs.
+> - The assistant may query ACCESS APIs on behalf of the user to answer questions about system status, allocations, software availability, events, and other live data.
 > - Conversation content is stored temporarily to provide context for follow-up questions within a session.
-> - Query metadata (topic, tools used, timing) is logged with a hashed, non-reversible user identifier for aggregate usage reporting.
+> - Query metadata (topic, tools used, timing, capability exercised) is logged for usage reporting and quality evaluation.
 > - AI-generated responses may be inaccurate. The assistant is not a substitute for official ACCESS documentation or human support.
 >
 > For full details, see the [AI Assistant Privacy Notice](https://support.access-ci.org/tools/access-qa-tool/privacy).
@@ -32,7 +36,7 @@ Add under **Section 6: Information ACCESS Shares**:
 
 > **6.6 AI Assistant Data**
 >
-> User questions submitted to the ACCESS AI Assistant are processed by a third-party large language model provider to generate responses. This data is transmitted via API and is not used by the provider for model training. Usage analytics events (not containing question text or personally identifiable information) are sent to Google Analytics 4 via Google Tag Manager. See the [AI Assistant Privacy Notice](https://support.access-ci.org/tools/access-qa-tool/privacy) for details.
+> User questions submitted to the ACCESS AI Assistant are processed by a third-party large language model provider to generate responses. This data is transmitted via API and is not used by the provider for model training. The assistant also queries ACCESS APIs (MCP servers) to retrieve live data such as system status, allocation information, and event listings — this data is not shared with third parties beyond what is needed to generate the response. Usage analytics events (not containing question text or personally identifiable information) are sent to Google Analytics 4 via Google Tag Manager. See the [AI Assistant Privacy Notice](https://support.access-ci.org/tools/access-qa-tool/privacy) for details.
 
 ---
 
