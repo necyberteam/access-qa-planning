@@ -18,7 +18,7 @@ This is not a separate system. It extends the capability registry with a `resour
 
 3. **Unified capabilities endpoint.** `GET /api/v1/capabilities?resource_context=delta` returns capabilities filtered and augmented for that RP. Same endpoint the floating widget uses without the parameter. One endpoint, one UI flow — context shapes what you see.
 
-4. **Adaptive layout.** The response includes a `layout` hint (`flat` or `categories`) based on total capability count. RP embeds with ≤8 items get a flat list of suggested questions. The floating widget with 15+ items gets category grouping. The UI renders based on the hint — no special "embedded mode" logic.
+4. **Adaptive layout (optional).** The response may include a `layout` hint (`flat` or `categories`) based on total capability count. RP embeds with ≤8 items get a flat list of suggested questions. The floating widget with 15+ items gets category grouping. The simple version uses the same single-button "Show my options" pattern for both, with resource-scoped `example_query` content.
 
 5. **RP context via data attribute.** The Drupal template puts `data-resource-context="delta"` on the embed div. `headerfooter.js` reads it and passes `resourceContext` to the `qaBot()` initialization. This keeps the chatbot portable — any page that knows the RP slug can embed it.
 
@@ -102,6 +102,8 @@ The resource name is interpolated from the cached title.
 
 ### 5. Capabilities Response
 
+> **Updated 2026-04-06**: Aligned with the `example_query` pattern from the capability registry (access-agent PR #12). Each capability now has separate `description` and `example_query` fields. The `label` is the capability name, not a question. The `layout` hint is removed — the frontend decides presentation based on context (embedded vs floating) rather than a server-side item count.
+
 For `GET /api/v1/capabilities?resource_context=delta` with a fully-documented resource:
 
 ```json
@@ -110,66 +112,93 @@ For `GET /api/v1/capabilities?resource_context=delta` with a fully-documented re
     "slug": "delta",
     "title": "Delta"
   },
-  "layout": "flat",
-  "capabilities": [
+  "categories": [
     {
-      "id": "ask_about_resource",
-      "label": "How do I log in?",
-      "description": "Get help logging in to Delta",
-      "section": "login"
+      "id": "resource_docs",
+      "label": "About Delta",
+      "order": 0,
+      "capabilities": [
+        {
+          "id": "ask_about_resource",
+          "label": "Login",
+          "description": "Get help logging in to Delta",
+          "example_query": "How do I log in to Delta?",
+          "section": "login"
+        },
+        {
+          "id": "ask_about_resource",
+          "label": "File transfer",
+          "description": "Learn about file transfer options on Delta",
+          "example_query": "How do I transfer files to Delta?",
+          "section": "file_transfer"
+        },
+        {
+          "id": "ask_about_resource",
+          "label": "Storage",
+          "description": "Explore storage options and quotas on Delta",
+          "example_query": "What storage is available on Delta?",
+          "section": "storage"
+        },
+        {
+          "id": "ask_about_resource",
+          "label": "Job submission",
+          "description": "Learn about queues and job submission on Delta",
+          "example_query": "How do I submit a job on Delta?",
+          "section": "queue_specs"
+        },
+        {
+          "id": "ask_about_resource",
+          "label": "Software",
+          "description": "See frequently used software on Delta",
+          "example_query": "What software is available on Delta?",
+          "section": "top_software"
+        },
+        {
+          "id": "ask_about_resource",
+          "label": "Datasets",
+          "description": "Browse datasets available on Delta",
+          "example_query": "What datasets are available on Delta?",
+          "section": "datasets"
+        }
+      ]
     },
     {
-      "id": "ask_about_resource",
-      "label": "How do I transfer files?",
-      "description": "Learn about file transfer options on Delta",
-      "section": "file_transfer"
+      "id": "support",
+      "label": "Create a ticket",
+      "order": 1,
+      "capabilities": [
+        {
+          "id": "open_ticket",
+          "label": "Open a help ticket",
+          "description": "Create a support ticket for technical issues",
+          "example_query": "Get help with a Delta issue",
+          "requires_auth": false
+        }
+      ]
     },
     {
-      "id": "ask_about_resource",
-      "label": "What storage is available?",
-      "description": "Explore storage options and quotas on Delta",
-      "section": "storage"
-    },
-    {
-      "id": "ask_about_resource",
-      "label": "How do I submit a job?",
-      "description": "Learn about queues and job submission on Delta",
-      "section": "queue_specs"
-    },
-    {
-      "id": "ask_about_resource",
-      "label": "What software is available?",
-      "description": "See frequently used software on Delta",
-      "section": "top_software"
-    },
-    {
-      "id": "ask_about_resource",
-      "label": "What datasets are available?",
-      "description": "Browse datasets available on Delta",
-      "section": "datasets"
-    },
-    {
-      "id": "open_ticket",
-      "label": "Get help with a Delta issue",
-      "description": "Create a support ticket",
-      "requires_auth": false
-    },
-    {
-      "id": "check_usage",
-      "label": "Check my usage on Delta",
-      "description": "View resource usage and performance data",
-      "requires_auth": true,
-      "locked": true
+      "id": "analytics",
+      "label": "Check usage",
+      "order": 2,
+      "capabilities": [
+        {
+          "id": "check_usage",
+          "label": "Check usage (XDMoD)",
+          "description": "View resource usage and performance data",
+          "example_query": "Check my usage on Delta",
+          "requires_auth": true,
+          "locked": true
+        }
+      ]
     }
   ],
-  "is_authenticated": false,
-  "login_url": "/login?redirect=..."
+  "is_authenticated": false
 }
 ```
 
-**Layout logic:** If `len(capabilities) <= 8`, set `layout: "flat"`. Otherwise, `layout: "categories"` and group into the standard category structure. Most RP embeds will have 5-8 items and get flat layout.
+The response uses the same `categories` structure as the non-scoped endpoint. The resource-specific sections are grouped under a new `resource_docs` category. The always-present capabilities (support, analytics) keep their standard category IDs with `example_query` text interpolated with the resource name.
 
-For the standard floating widget (no `resource_context`), the response is unchanged — categories with the full capability list per the existing spec.
+For the standard floating widget (no `resource_context`), the response is unchanged.
 
 ### 6. Chatbot UI
 
@@ -222,9 +251,9 @@ The sections are derived from checking which `field_rp_*` fields and paragraph r
 
 ### Agent (`access-agent`)
 
-- **RP section cache:** New `RPSectionCache` class that fetches and caches `/api/resources` data. Refreshed at startup + TTL.
-- **Capabilities endpoint:** Accept optional `resource_context` query param. When present, build RP-scoped response using cache + section-to-question mapping.
-- **Layout logic:** Count capabilities, return `layout: "flat"` or `"categories"`.
+- **RP section cache:** New `RPSectionCache` class that fetches and caches `/api/resources` data. Refreshed at startup + TTL. Mock data initially (production has zero resources with `has_documentation: true` as of 2026-04-06).
+- **Capabilities endpoint:** Accept optional `resource_context` query param. When present, build RP-scoped response using cache + section-to-question mapping. Capabilities use separate `description` and `example_query` fields (consistent with capability registry pattern from PR #12).
+- **Layout logic (optional):** If implemented, return `layout: "flat"` or `"categories"` based on capability count. The simple version uses the same single-button discovery pattern as the floating widget.
 - **Query endpoint:** Accept optional `resource_context` in request body (per existing UKY scoped RAG spec).
 - **UKY client:** Pass `rp_name` and `X-Origin` header (per existing UKY scoped RAG spec).
 
