@@ -262,7 +262,16 @@ The sections are derived from checking which `field_rp_*` fields and paragraph r
 - **`qa-bot-core`:** Accept `resourceContext` prop. Include in `resource_context` field on query POST. Pass to capabilities endpoint as query param.
 - **`access-qa-bot`:** Accept and pass through `resourceContext` prop.
 - **UI rendering:** Support `layout: "flat"` — render as suggested-question buttons with "Try asking:" label. Text input always visible.
-- **`headerfooter.js`:** Read `data-resource-context` from embedded target, pass as `resourceContext` to `qaBot()`.
+
+### Integration layer (`access-ci-ui`, `cyberteam_drupal`)
+
+The `resourceContext` prop must flow through the full embedding chain:
+
+- **`access-ci-ui`** (`src/index.jsx`): Accept `resourceContext` in the `qaBot()` config, pass through to `<AccessQABot>`. This is a separate repo (`access-ci-org/access-ci-ui`) — requires a PR.
+- **`headerfooter.js`** (Drupal): Read `data-resource-context` from the embedded target div, pass as `resourceContext` to `qaBot()`.
+- **RP documentation template** (Drupal): Add `data-resource-context="<slug>"` to the embedded chatbot div.
+
+Testing workflow: qa-bot-core → access-qa-bot (npm publish) → access-ci-ui (npm install, build, copy dist/) → Drupal (ddev drush cr). See `DRUPAL_TESTING.md` in the access-ci root.
 
 ---
 
@@ -292,3 +301,5 @@ If an RP has minimal documentation (e.g., only a description), the capabilities 
 1. **RP slug mapping** — The `resource_id` in Drupal (e.g., `test-alpha-9999`) may not match UKY's valid RP slugs (e.g., `delta`, `anvil`). Need a mapping between CiDeR resource IDs and UKY slugs. This could live in the agent's config or be a field on the Drupal node.
 2. **Welcome message personalization** — Should the embedded chatbot's welcome message reference the user's allocations on this specific resource (from the personalized capabilities endpoint)? e.g., "I see you have allocation TG-CIS123456 on Delta."
 3. **UKY `in_scope` field** — Still pending from UKY. Until available, use text heuristic for fallback detection.
+4. **Layout approach** — Should the embedded chatbot use the same single-button "Show my options" pattern as the floating widget, or show resource-scoped capabilities as flat example-query buttons (up to ~8)? The simple version ships first; the flat buttons variant is a possible follow-up. Andrew to weigh in.
+5. **Drupal data availability** — Production `/api/resources` has zero resources with `has_documentation: true` and no `populated_sections` field (as of 2026-04-06). Agent-side development uses mock data until the Drupal endpoint is extended.
