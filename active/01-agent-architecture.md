@@ -29,7 +29,7 @@ An intelligent agent system where:
 - **Combined Synthesis**: Merges UKY RAG results with tool results for comprehensive answers
 - **Citations Preserved**: Maintain link/source capability users rely on
 - **Domain Agents**: Authenticated operations via JSM (tickets) and Announcements domain agents — both implemented and deployed
-- **Eval Pipeline**: LLM-as-judge scoring with Argilla for human review (Decision 005)
+- **Eval Pipeline**: LLM-as-judge scoring with Argilla for human review ([Decision 005](../decisions/005-llm-judge-eval-pipeline.md)). Three-way comparison against the current production RAG-only system gates production launch ([Decision 007](../decisions/007-production-baseline-comparison.md)).
 - **Turnstile**: Deferred bot-protection challenge for anonymous users
 - **Feedback Loop**: User feedback flows to Argilla for curation
 

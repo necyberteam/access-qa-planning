@@ -30,5 +30,6 @@ Deploy an on-premise LLM on UKY GPU infrastructure for production eval scoring. 
 
 ## See Also
 
-- Decision 005 (eval pipeline design)
+- [Decision 005: LLM-as-Judge Eval Pipeline](./005-llm-judge-eval-pipeline.md)
+- [Decision 007: Production Baseline Comparison Eval](./007-production-baseline-comparison.md) — the pre-production comparison that will use a cloud judge under this decision's phasing
 - Spec section: "On-Premise LLM Infrastructure" in `access-agent/docs/superpowers/specs/2026-03-31-eval-pipeline-design.md`

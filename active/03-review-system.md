@@ -2,15 +2,16 @@
 
 > **Part of the Data Pipeline**: [Q&A Data Preparation](../archive/02-qa-data.md) → This doc
 >
-> **Related**: [Agent Architecture](./01-agent-architecture.md) | [Observability](./08-observability.md) | [Decision 005: Eval Pipeline](../decisions/005-llm-judge-eval-pipeline.md)
+> **Related**: [Agent Architecture](./01-agent-architecture.md) | [Observability](./08-observability.md) | [Decision 005: Eval Pipeline](../decisions/005-llm-judge-eval-pipeline.md) | [Decision 007: Production Baseline Comparison](../decisions/007-production-baseline-comparison.md)
 
 ## Overview
 
-Web application for reviewing data at three critical points:
+Web application for reviewing data at four critical points:
 
 1. **Pre-Deployment Q&A Review** (on hold): Approve Q&A pairs before they enter the RAG database. Currently on hold while UKY RAG serves as the primary backend ([Decision 002](../decisions/002-uky-rag-over-pgvector.md)).
-2. **Agent Answer Evaluation** (new): Review agent answers scored by the LLM judge. Reviewers see the question, answer, RAG context, tool results, and judge suggestions on a 5-dimension rubric. Human scores calibrate the judge.
-3. **Post-Deployment Feedback**: Capture user feedback on agent responses via thumbs up/down + optional text.
+2. **Agent Answer Evaluation** (ongoing): Review agent answers scored by the LLM judge. Reviewers see the question, answer, RAG context, tool results, and judge suggestions on a 5-dimension rubric. Human scores calibrate the judge.
+3. **Production Baseline Comparison** (pre-launch, one-time): Head-to-head comparison of the new agent against the current production RAG-only system on curated question batteries. Reviewers validate severe regressions and wins before production go-live. See [Decision 007](../decisions/007-production-baseline-comparison.md).
+4. **Post-Deployment Feedback**: Capture user feedback on agent responses via thumbs up/down + optional text.
 
 Built on [Argilla](https://argilla.io), an open-source data annotation platform for LLM feedback and data curation, with integration layers for ACCESS-specific features.
 
@@ -20,6 +21,7 @@ Built on [Argilla](https://argilla.io), an open-source data annotation platform 
 |---------|---------|-----------|
 | `qa-review` | Q&A pair curation (on hold) | Persistent |
 | `eval-<branch-name>` | Pre-production eval review | Created per branch, deleted on merge |
+| `eval-baseline-comparison` | Three-way comparison for production go-live ([Decision 007](../decisions/007-production-baseline-comparison.md)) | One-time, retained as launch evidence |
 | `eval-production` | Production answer review | Persistent, rolling |
 
 See the [eval README](https://github.com/necyberteam/access-agent/blob/main/eval/README.md) for usage and the [eval pipeline spec](https://github.com/necyberteam/access-agent/blob/main/docs/superpowers/specs/2026-03-31-eval-pipeline-design.md) for the full design.

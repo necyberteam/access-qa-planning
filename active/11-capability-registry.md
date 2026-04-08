@@ -27,23 +27,164 @@ Each capability gets a structured definition with a user-facing label, descripti
 
 The agent serves two endpoints:
 
-**`GET /api/v1/capabilities`** — fast, in-memory, no external calls. Returns all capabilities grouped by category, filtered by auth status. Auth-required capabilities are visible to anonymous users but marked as locked (with a login URL), so they know what they're missing.
+**`GET /api/v1/capabilities`** — fast, in-memory, no external calls. Returns all capabilities grouped by category. The few capabilities that still require authentication (acting on personal data or authored content) are visible to anonymous users but marked as locked with a login URL, so they know what's available after signing in.
 
 **`GET /api/v1/capabilities/personalized`** — requires authentication, called lazily. Returns user-specific context like coordinator status and active allocations. Fed into the agent's system prompt, not surfaced directly in the UI.
 
-Capabilities can be disabled via environment variable (`DISABLED_CAPABILITIES`) without redeploying.
+Every capability is the **single unit of operator and runtime control**. Two environment variables (`ENABLED_CAPABILITIES` and `DISABLED_CAPABILITIES`) drive what the agent can do, and those controls propagate through the UI, the system prompt, the MCP tool catalog, RAG routing, domain agent routing, and usage attribution. See [Capabilities as Runtime Source of Truth](#capabilities-as-runtime-source-of-truth) below for the enforcement model.
 
 ### Categories
 
 | Category | Label | Auth Required | Examples |
 |----------|-------|---------------|----------|
-| general | Ask a question | Yes (UKY RAG) | General Q&A about ACCESS |
+| general | Ask a question | No | General Q&A about ACCESS |
 | support | Get help | No | Open ticket, report login issue, report security |
 | content | Manage content | Yes | Create/update/delete announcements |
-| explore | Explore resources | Yes (UKY RAG) | Allocations, software, events, system status |
-| analytics | Check usage | Yes | XDMoD queries |
+| explore | Explore resources | No | Allocations, software, events, system status |
+| analytics | Check usage | No* | XDMoD queries, usage metrics Q&A |
 
-Most capabilities require authentication because the primary RAG pipeline (UKY) requires it. Only support capabilities (tickets, security reports) are available anonymously. If anonymous RAG access becomes available, the auth flags can be flipped without code changes.
+Most capabilities are available to anonymous users. The RAG pipeline accepts anonymous queries, gated by [Cloudflare Turnstile](./turnstile-bot-protection-spec.md) bot protection; authenticated users bypass the challenge. Only capabilities that act on a user's personal data or take authored actions (currently `manage_announcements`) require login.
+
+*See [open questions](#open-questions) on whether `check_usage` should be authenticated to scope results to the user's allocations.
+
+---
+
+## Capabilities as Runtime Source of Truth
+
+> **Status:** Proposed, April 2026. This section describes the target enforcement model. Implementation is tracked in the access-agent repo.
+
+### Problem
+
+Before this design, the capability registry was effectively a UI concern. The `DISABLED_CAPABILITIES` env var hid capabilities from discovery responses and the synthesis system prompt, but it did **not** prevent the planner from calling the underlying MCP tools, the rag_answer node from calling the RAG endpoint, or the router from invoking a domain agent. This meant:
+
+- Operators had no single switch to turn a feature off
+- The planner and the system prompt could drift (tools callable but not described, or described but unavailable)
+- There was no way to run an "agent with no MCP tools" configuration for evaluation purposes without code changes
+- Usage attribution and runtime behavior were maintained as two parallel hardcoded maps
+
+### The model
+
+Each capability declares **what it is backed by**. A capability's backend is one of:
+
+- **`RagBackend(endpoint, scoped?)`** — the capability is served by a RAG lookup against the given endpoint (`general` or `xdmod`). `scoped=True` means the RAG call is resource-scoped to a specific RP.
+- **`McpBackend(servers=[...])`** — the capability is served by calls to one or more MCP servers. All tools on those servers are considered part of this capability.
+- **`None`** — the capability is pure prompt behavior with no external backend (reserved for future use; no current capabilities use this).
+
+The registry aggregates backends across all enabled capabilities and exposes derived queries:
+
+| Query | Returns |
+|-------|---------|
+| `enabled_mcp_servers()` | Union of `McpBackend.servers` across enabled capabilities |
+| `enabled_rag_endpoints()` | Subset of `{"general", "xdmod"}` derived from enabled `RagBackend` capabilities |
+| `scoped_rag_enabled()` | True if any enabled `RagBackend` has `scoped=True` |
+| `is_domain_enabled(name)` | True if any capability belonging to that domain is enabled |
+
+### Enforcement points
+
+Three runtime components read from the registry. Each is the single gate for its layer.
+
+| Component | Reads | Effect |
+|-----------|-------|--------|
+| **Tool catalog loader** | `enabled_mcp_servers()` | Tools from disabled servers are dropped from the catalog at load time. The planner never sees them. |
+| **RAG answer node** | `enabled_rag_endpoints()`, `scoped_rag_enabled()` | RAG calls for disabled endpoints are skipped. Scoped RAG requires both the scoped flag and the base endpoint. |
+| **Graph router + domain agent node** | `is_domain_enabled()` | If the classifier routes to a disabled domain, the router falls through to the general pipeline. The domain agent node also refuses as a defense-in-depth check. |
+
+The UI (`/api/v1/capabilities`), the synthesis system prompt (`get_system_prompt_section`), and usage attribution (`infer_capability_id`) are all derived from the same registry, so they cannot drift from runtime behavior. When a capability is disabled:
+
+- It disappears from the UI
+- It disappears from the agent's self-description in the system prompt
+- Its tools disappear from the planner's catalog
+- Its RAG endpoint stops being called
+- Its domain routing is bypassed
+- It stops appearing in usage logs
+
+### Operator interface
+
+Two environment variables control the registry:
+
+- **`ENABLED_CAPABILITIES`** (optional allow-list) — comma-separated capability IDs. If set, only listed IDs are candidates; everything else is filtered out. If unset, all capabilities defined in the registry are candidates.
+- **`DISABLED_CAPABILITIES`** (always-wins deny-list) — comma-separated capability IDs. Applied after the allow-list. Disabled capabilities are removed no matter what.
+
+**Semantics:** Deny always wins. If `ENABLED_CAPABILITIES=a,b,c` and `DISABLED_CAPABILITIES=c`, the active set is `{a, b}`. Overlap is legal; no warning is issued.
+
+This gives operators:
+
+| Scenario | Config |
+|----------|--------|
+| Normal production | Neither var set |
+| Emergency disable one feature | `DISABLED_CAPABILITIES=manage_announcements` |
+| Incremental rollout (early deployment) | `ENABLED_CAPABILITIES=ask_question,check_allocations,search_software` |
+| Evaluation: RAG-only baseline | `ENABLED_CAPABILITIES=ask_question` |
+| Evaluation: MCP-only (no RAG) | `DISABLED_CAPABILITIES=ask_question,ask_xdmod_question,ask_about_resource` (unusual; agent logs a warning) |
+
+### Startup log
+
+At registry build time the agent logs exactly what the filter resolved to, so operators can verify:
+
+```
+Capability filter: ENABLED=(all), DISABLED=(none)
+Registry: 13 capabilities active
+  Active: ask_question, ask_xdmod_question, ask_about_resource, check_allocations, ...
+  → MCP servers in tool catalog: allocations, software-discovery, system-status, events, affinity-groups, xdmod, xdmod-data, nsf-awards, announcements, jsm
+  → RAG endpoints enabled: general, xdmod
+  → Scoped RAG enabled: yes
+```
+
+### RAG capabilities
+
+Three new `RagBackend` capabilities are added to the general registry:
+
+| Capability ID | Label (UI) | Backend | Category |
+|---------------|------------|---------|----------|
+| `ask_question` | Ask a question | `RagBackend(endpoint="general")` | general |
+| `ask_xdmod_question` | Ask about usage metrics | `RagBackend(endpoint="xdmod")` | analytics |
+| `ask_about_resource` | Ask about a specific resource | `RagBackend(endpoint="general", scoped=True)` | explore |
+
+UI labels are deliberately generic — the underlying RAG provider is an implementation detail that users don't need to see.
+
+### MCP capabilities
+
+Existing general and domain capabilities each get an `McpBackend` declaration:
+
+| Capability ID | Backend servers |
+|---------------|-----------------|
+| `check_allocations` | `allocations` |
+| `search_software` | `software-discovery` |
+| `check_system_status` | `system-status` |
+| `browse_events` | `events` |
+| `browse_affinity_groups` | `affinity-groups` |
+| `check_usage` | `xdmod`, `xdmod-data` |
+| `search_nsf_awards` | `nsf-awards` |
+| `search_announcements`, `manage_announcements` | `announcements` |
+| `open_ticket`, `report_login_problem`, `report_security` | `jsm` |
+
+### Why per-server, not per-tool
+
+Every capability today maps cleanly to one or more whole MCP servers. Per-tool granularity would force every capability to enumerate tool names, breaking every time a new tool is added to a server. The `McpBackend` dataclass is the right extension point if per-tool control becomes necessary later — add an optional `tools: list[str] | None` that defaults to "all tools from this server."
+
+### Open questions
+
+1. **`ask_question` naming.** Reuses the existing general-pipeline ID, now specifically meaning "RAG lookup against the general ACCESS docs endpoint." The name is short and doesn't leak implementation details, so retained.
+2. **No-RAG warning.** When an operator disables every RAG capability, the agent logs a warning at startup (`"No RAG capabilities enabled — agent will rely on MCP tools only"`) but doesn't refuse to start. This is intentional — lets the eval pipeline run MCP-only comparisons and lets future scenarios disable RAG entirely if needed.
+3. **Removing `DomainAgentConfig.mcp_servers` and `Capability.enabled`.** Both are now redundant with the backend-driven design. Kept for backward compat during rollout; removal is a follow-up cleanup.
+
+### Evaluation use case
+
+This design was motivated by the need to run production-readiness evals comparing the new agent against the current UKY-only prod system. With this design, the eval sequence becomes:
+
+```bash
+# Run 1: agent, RAG-only (agent without MCP value-add)
+ENABLED_CAPABILITIES=ask_question \
+  python -m src.eval run --questions eval/questions/friendly_battery.json
+
+# Run 2: agent, full capabilities
+python -m src.eval run --questions eval/questions/friendly_battery.json
+
+# Compare
+python -m src.eval compare --run-a <run1> --run-b <run2>
+```
+
+Both runs use the same agent binary, same classifier, same synthesis layer — only the enabled capability set differs. This isolates the value added by MCP tools on top of RAG. A third run against raw UKY RAG (via a separate runner mode in the eval pipeline) completes the three-way comparison; see the production baseline comparison section of the eval plan.
 
 ---
 
@@ -183,6 +324,12 @@ See **[Resource-Scoped Capabilities](./resource-scoped-capabilities.md)** for th
 
 ## Open Questions
 
-1. **UKY PII policy** — Can the user's name be included in the system prompt? Affects personalized greeting. Fallback: use ACCESS ID username or no name.
-2. **Anonymous RAG access** — If UKY allows unauthenticated queries in the future, most capabilities can be unlocked for anonymous users by flipping the `requires_auth` flag.
-3. **RP slug mapping** — CiDeR resource IDs in Drupal may not match UKY's valid RP slugs. Need a mapping between the two. See [Resource-Scoped Capabilities](./resource-scoped-capabilities.md) open question #1.
+1. **RAG provider PII policy** — Can the user's name be included in the system prompt for authenticated users? Affects personalized greeting. Fallback: use ACCESS ID username or no name.
+2. **`check_usage` authentication** — Currently `requires_auth=False` in code, but XDMoD queries arguably should be authenticated to scope results to the user's own allocations. Confirm intended behavior with the XDMoD team.
+3. **RP slug mapping** — CiDeR resource IDs in Drupal may not match the RAG provider's valid RP slugs. Need a mapping between the two. See [Resource-Scoped Capabilities](./resource-scoped-capabilities.md) open question #1.
+
+## Resolved Questions
+
+| Question | Resolution |
+|----------|------------|
+| **Anonymous RAG access** | Live. Anonymous users can query the RAG pipeline, gated by [Cloudflare Turnstile](./turnstile-bot-protection-spec.md) bot protection. Authenticated users bypass the challenge. Most capabilities have been flipped to `requires_auth=False`. |

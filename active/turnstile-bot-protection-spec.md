@@ -1,10 +1,12 @@
 # Turnstile Bot Protection for Chatbot
 
-> **Related**: [Agent Architecture](../active/01-agent-architecture.md) | [Capability Registry](../active/11-capability-registry.md)
+> **Status:** Implemented and deployed to production.
+>
+> **Related**: [Agent Architecture](./01-agent-architecture.md) | [Capability Registry](./11-capability-registry.md)
 
 ## Problem
 
-The chatbot currently requires login to use, largely because the UKY RAG pipeline requires authentication. We want to open the chatbot to anonymous users while protecting the inference endpoints from bot abuse.
+Historically the chatbot required login because the RAG pipeline required authentication. We wanted to open the chatbot to anonymous users while protecting the inference endpoints from bot abuse. This spec describes the solution that is now live in production.
 
 ## Approach
 

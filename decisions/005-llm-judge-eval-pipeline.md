@@ -33,3 +33,5 @@ Build an LLM-as-judge evaluation pipeline with human review via Argilla for cali
 
 - Spec: `access-agent/docs/superpowers/specs/2026-03-31-eval-pipeline-design.md`
 - Implementation: `access-agent/src/eval/` and `access-agent/eval/README.md`
+- [Decision 006: On-Premise LLM for Production Eval](./006-onprem-llm-for-eval.md)
+- [Decision 007: Production Baseline Comparison Eval](./007-production-baseline-comparison.md) — uses this pipeline for the new-agent-vs-current-production comparison

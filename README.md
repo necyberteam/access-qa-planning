@@ -77,6 +77,7 @@ Key architectural and design decisions. Read these to understand *why* the syste
 | [004](decisions/004-jsm-dry-run-safeguard.md) | JSM dry-run safeguard | 2026-03 | Test runs created real tickets; MCP server needs dry-run mode |
 | [005](decisions/005-llm-judge-eval-pipeline.md) | LLM-as-judge eval pipeline | 2026-03 | 5-dimension rubric + Argilla for human calibration |
 | [006](decisions/006-onprem-llm-for-eval.md) | On-premise LLM for eval | 2026-03 | Privacy policy doesn't cover external LLM processing of user queries |
+| [007](decisions/007-production-baseline-comparison.md) | Production baseline comparison eval | 2026-04 | Three-way comparison (raw RAG / agent RAG-only / agent full) as production go-live gate |
 
 ## Active Documents
 
@@ -95,6 +96,7 @@ Current planning and design docs. These describe how things work now and what's 
 | [Privacy Policy](active/privacy-policy-additions.md) | PII handling, LLM processing policy |
 | [Resource-Scoped Capabilities](active/resource-scoped-capabilities.md) | RP-specific chatbot embedding |
 | [Resource-Scoped RAG](active/uky-resource-scoped-rag-spec.md) | UKY endpoint integration per resource |
+| [Turnstile Bot Protection](active/turnstile-bot-protection-spec.md) | Anonymous RAG access via CAPTCHA (deployed) |
 
 ### Specs and Plans (in access-agent repo)
 
@@ -122,7 +124,6 @@ Completed implementation specs and historical docs. These describe work that's d
 | [MCP Extraction](archive/mcp-extraction-impl.md) | Implemented |
 | [Access QA Tool Pages](archive/pages-access-qa-tool.md) | Historical mockups |
 | [Current Production Pages](archive/pages-current-production.md) | Historical reference |
-| [Turnstile Bot Protection](archive/turnstile-bot-protection-spec.md) | Implemented |
 
 ## Current Status
 

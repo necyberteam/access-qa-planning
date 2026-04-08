@@ -167,6 +167,8 @@ For `GET /api/v1/capabilities?resource_context=delta` with a fully-documented re
 }
 ```
 
+> **Note:** The `check_usage` capability is shown above as auth-required for illustration. In the current code it is `requires_auth=False`. See [open question on `check_usage` authentication](./11-capability-registry.md#open-questions). The RAG capabilities (`ask_about_resource`, `ask_question`) are not auth-required — anonymous users reach them through [Cloudflare Turnstile](./turnstile-bot-protection-spec.md) bot protection.
+
 **Layout logic:** If `len(capabilities) <= 8`, set `layout: "flat"`. Otherwise, `layout: "categories"` and group into the standard category structure. Most RP embeds will have 5-8 items and get flat layout.
 
 For the standard floating widget (no `resource_context`), the response is unchanged — categories with the full capability list per the existing spec.
